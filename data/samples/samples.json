@@ -1,0 +1,50 @@
+{
+  "name": "堵河流域（真实DEM）",
+  "topo_options": {
+    "station_snap_max_m": 5000.0
+  },
+  "dem": {
+    "file": "dem.tif",
+    "relief": "dem_relief.png",
+    "bounds": [
+      109.4499207,
+      31.4003758,
+      111.04980471500001,
+      32.850571095999996
+    ],
+    "elev_min": -1.0,
+    "elev_max": 3084.5,
+    "cellsize": 0.001373291,
+    "ncols": 1165,
+    "nrows": 1056,
+    "crs": "EPSG:4326",
+    "accum_threshold": 1500
+  },
+  "layers": [
+    {
+      "file": "河流.shp",
+      "name": "堵河水系",
+      "type": "river"
+    },
+    {
+      "file": "水文站.shp",
+      "name": "水文站",
+      "type": "hydro_station"
+    },
+    {
+      "file": "雨量站.shp",
+      "name": "雨量站",
+      "type": "rain_station"
+    },
+    {
+      "file": "湖泊.shp",
+      "name": "湖泊水库",
+      "type": "lake"
+    },
+    {
+      "file": "流域边界.shp",
+      "name": "流域边界",
+      "type": "boundary"
+    }
+  ]
+}

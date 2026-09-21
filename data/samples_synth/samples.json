@@ -1,0 +1,68 @@
+{
+  "name": "示例流域（合成数据）",
+  "dem": {
+    "file": "dem.asc",
+    "relief": "dem_relief.png",
+    "bounds": [
+      110.2,
+      30.0,
+      111.4,
+      31.05
+    ],
+    "elev_min": 146.5,
+    "elev_max": 2396.6,
+    "cellsize": 0.0025,
+    "ncols": 480,
+    "nrows": 420,
+    "crs": "EPSG:4326",
+    "accum_threshold": 600
+  },
+  "layers": [
+    {
+      "file": "河流.shp",
+      "name": "河流水系",
+      "type": "river"
+    },
+    {
+      "file": "水文站.shp",
+      "name": "水文站",
+      "type": "hydro_station"
+    },
+    {
+      "file": "雨量站.shp",
+      "name": "雨量站",
+      "type": "rain_station"
+    },
+    {
+      "file": "湖泊.shp",
+      "name": "湖泊水库",
+      "type": "lake"
+    },
+    {
+      "file": "流域边界.shp",
+      "name": "流域边界",
+      "type": "boundary"
+    }
+  ],
+  "stats": {
+    "river_segments": 168,
+    "hydro_stations": 8,
+    "rain_stations": 14,
+    "lakes": 3,
+    "main_river": "清江",
+    "topology": {
+      "node_count": 168,
+      "edge_count": 167,
+      "source_count": 84,
+      "junction_count": 83,
+      "outlet_count": 1,
+      "dissolved_pseudo_nodes": 1,
+      "flipped_for_flow": 1,
+      "total_length_km": 2560.57,
+      "max_order": 4,
+      "station_count": 0,
+      "station_attached": 0,
+      "lake_count": 0
+    }
+  }
+}
