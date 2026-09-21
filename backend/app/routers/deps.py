@@ -34,6 +34,20 @@ def get_project_or_404(pid: str) -> dict:
     return meta
 
 
+def series_loader(pid: str):
+    """时序序列读取回调：``series_loader(pid)(kind, key) -> [(datetime, value)]``。"""
+
+    def load(kind: str, key: str):
+        from ..core.timeseries import csv_to_records
+
+        path = st.ts_series_path(pid, kind, key)
+        if not path.exists():
+            return []
+        return csv_to_records(path.read_text(encoding="utf-8"))
+
+    return load
+
+
 def get_layer_or_404(pid: str, lid: str) -> dict:
     meta = get_project_or_404(pid)
     for l in meta.get("layers", []):

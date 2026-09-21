@@ -326,21 +326,36 @@ def save_ts_manifest(pid: str, manifest: dict) -> dict:
     return manifest
 
 
+def remove_file(path) -> bool:
+    """尽力删除单个文件，返回是否成功。
+
+    Windows 上文件可能被杀软/索引/其它进程短暂占用而删除失败；沙箱环境下删除
+    还可能被安全守护以 SystemExit 拒绝。调用方只需保证**逻辑删除**（清单条目已摘除），
+    因此这里对失败静默返回 False，避免把清理动作变成接口 500。
+    """
+    p = Path(path)
+    try:
+        p.unlink()
+        return True
+    except OSError:
+        return False
+    except SystemExit:
+        return False
+
+
 def clear_ts(pid: str, kind: str | None = None) -> None:
     """清空某类（或全部）时序数据与清单条目。"""
-    import shutil as _shutil
-
     d = ts_dir(pid, kind) if kind else ts_dir(pid)
     if d.exists():
-        _shutil.rmtree(d, ignore_errors=True)
+        for p in d.rglob("*"):
+            if p.is_file():
+                remove_file(p)
     if kind:
         m = read_ts_manifest(pid)
         m["series"][kind] = {}
         save_ts_manifest(pid, m)
     else:
-        p = project_dir(pid) / "timeseries" / "manifest.json"
-        if p.exists():
-            p.unlink()
+        remove_file(project_dir(pid) / "timeseries" / "manifest.json")
 
 
 # ---------------------------------------------------------------- 内部

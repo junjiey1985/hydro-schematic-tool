@@ -503,12 +503,18 @@ def demo_series(
     days: int = 1095,
     seed: int = 20260921,
     start: str = "2015-01-01",
+    flow_mode: str = "simple",
 ) -> dict:
-    """生成合成率定演示数据（降雨 / 流量 / 蒸发）。
+    """生成合成率定演示数据（降雨 / 蒸发 / 流量）。
 
-    用降水 → 两层线性水库（快/慢）产汇流 + 观测噪声造"实测"流量，物理量纲自洽：
-    1 mm/d 均匀降在 1 km² 上 = 1000/86400 ≈ 0.0116 m³/s，即 ``Q = mm/d · km² / 86.4``。
-    有真值参数，便于后续 P2/P3 用"已知真值"回收验证率定结果。
+    - 降雨：站点独立生成的日雨量（湿季权重 + 少量暴雨），年雨量 ≈ 900~1100 mm；
+    - 蒸发：流域蒸发能力（年周期），年均 ≈ 1.8 mm/d（≈660 mm/年，折算后与径流系数匹配）；
+    - 流量：``flow_mode="simple"`` 用两层线性水库（快/慢）造"实测"流量；
+      ``flow_mode="model"`` 则**跳过**，交由调用方用真值参数跑一遍本工具的新安江模型生成
+      （观测系统模拟实验 OSSE，见 ``model.simulate.truth_basin_flow``），
+      这样率定任务有明确的可回收基准。
+
+    物理量纲：1 mm/d 均匀降在 1 km² 上 = 1000/86400 ≈ 0.0116 m³/s，即 ``Q = mm/d · km² / 86.4``。
     """
     import random
 
@@ -552,12 +558,12 @@ def demo_series(
                 recs.append((d, 0.0))
         rain_by_station[sid] = recs
 
-    # ---- 蒸发能力（年周期，夏季高）
+    # ---- 蒸发能力（年周期：冬季 ≈0.7、夏季 ≈2.9 mm/d，年均 ≈1.83 mm/d ≈ 670 mm/年）
     evap_recs = []
     for d in dates:
         doy = d.timetuple().tm_yday
-        e = 1.2 + 2.6 * (0.5 + 0.5 * math.sin(2 * math.pi * (doy - 105) / 365.0))
-        evap_recs.append((d, round(e + rnd.gauss(0, 0.3), 2)))
+        e = 0.75 + 2.15 * (0.5 + 0.5 * math.sin(2 * math.pi * (doy - 105) / 365.0))
+        evap_recs.append((d, round(max(0.2, e + rnd.gauss(0, 0.25)), 2)))
 
     # ---- 各单元产汇流 → 出口站流量
     def catchment_rain(sb: dict) -> list[float]:
@@ -570,30 +576,47 @@ def demo_series(
         return out
 
     flow_by_station: dict[str, dict] = {}
-    for oid, info in outlet_stations.items():
-        sb = info["sb"]
-        area = float(sb.get("upstream_area_km2") or sb.get("area_km2") or 1000.0)
-        p = catchment_rain(sb)
-        # 真值参数（后续率定应能回收）+ 上游链：本单元只算区间产流
-        k_runoff, k_fast, k_slow = 0.42, 0.45, 0.965
-        s1 = s2 = 0.0
-        recs = []
-        for i, d in enumerate(dates):
-            w = min(p[i], 60.0)  # 超渗截断（近似蓄满产流的容量限制）
-            r = k_runoff * max(0.0, w - 2.0)  # 2 mm 初损
-            s1 = k_fast * s1 + (1 - k_fast) * r
-            s2 = k_slow * s2 + (1 - k_slow) * r * 0.35
-            q = area * (s1 + s2) / 86.4
-            q *= 1 + rnd.gauss(0, 0.05)  # 观测噪声
-            recs.append((d, round(max(0.0, q), 2)))
-        flow_by_station[oid] = {"name": info["name"], "records": recs}
+    if flow_mode != "model":
+        for oid, info in outlet_stations.items():
+            sb = info["sb"]
+            area = float(sb.get("upstream_area_km2") or sb.get("area_km2") or 1000.0)
+            p = catchment_rain(sb)
+            # 简化真值（两层线性水库）+ 上游链：本单元只算区间产流
+            k_runoff, k_fast, k_slow = 0.42, 0.45, 0.965
+            s1 = s2 = 0.0
+            recs = []
+            for i, d in enumerate(dates):
+                w = min(p[i], 60.0)  # 超渗截断（近似蓄满产流的容量限制）
+                r = k_runoff * max(0.0, w - 2.0)  # 2 mm 初损
+                s1 = k_fast * s1 + (1 - k_fast) * r
+                s2 = k_slow * s2 + (1 - k_slow) * r * 0.35
+                q = area * (s1 + s2) / 86.4
+                q *= 1 + rnd.gauss(0, 0.05)  # 观测噪声
+                recs.append((d, round(max(0.0, q), 2)))
+            flow_by_station[oid] = {"name": info["name"], "records": recs}
 
+    from .model.params import DEMO_TRUTH_PARAMS
+
+    truth = {
+        "mode": flow_mode,
+        "params": dict(DEMO_TRUTH_PARAMS),
+        "obs_noise": 0.05,
+        "note": (
+            "XAJ 真值参数（OSSE）：流量由本工具新安江模型以该参数生成，率定应能回收"
+            if flow_mode == "model"
+            else "简化两层水库真值（无拓扑时的回退模式）"
+        ),
+        "runoff_coef": 0.42,
+        "k_fast": 0.45,
+        "k_slow": 0.965,
+        "initial_loss_mm": 2.0,
+    }
     return {
         "start": t0.strftime("%Y-%m-%d"),
         "days": days,
         "rain": {k: {"name": v["name"], "records": rain_by_station[k]} for k, v in rain_stations.items()},
         "flow": flow_by_station,
         "evap": {"default": {"name": "流域蒸发能力", "records": evap_recs}},
-        "truth": {"runoff_coef": 0.42, "k_fast": 0.45, "k_slow": 0.965, "initial_loss_mm": 2.0},
+        "truth": truth,
     }
 

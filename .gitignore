@@ -27,3 +27,9 @@ data/_uploads/
 # WorkBuddy 本机会话目录
 .workbuddy/
 debug.log
+
+# 本地调试截图与临时脚本产物
+debug_shots/
+
+# 本地调试截图与临时脚本产物
+debug_shots/

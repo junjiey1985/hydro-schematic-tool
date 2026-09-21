@@ -32,6 +32,11 @@
         时序数据
       </button>
 
+      <button class="btn sm" :disabled="!state.project" :title="mdlTitle" @click="openModel">
+        <span v-if="state.simResult" class="mdl-dot"></span>
+        模型模拟
+      </button>
+
       <div class="spacer"></div>
 
       <span v-if="state.topology" class="tag ok">
@@ -91,6 +96,9 @@
 
     <!-- ============ 时序数据（率定输入） ============ -->
     <TimeseriesPanel :show="ui.timeseries" @close="ui.timeseries = false" />
+
+    <!-- ============ 模型模拟（新安江 + 马斯京根） ============ -->
+    <ModelPanel :show="ui.model" @close="ui.model = false" />
 
     <!-- ============ 删除项目 ============ -->
     <div v-if="ui.delProject" class="mask" @click.self="ui.delProject = false">
@@ -454,6 +462,7 @@ import MapView from './components/MapView.vue'
 import SchematicView from './components/SchematicView.vue'
 import SidePanel from './components/SidePanel.vue'
 import TimeseriesPanel from './components/TimeseriesPanel.vue'
+import ModelPanel from './components/ModelPanel.vue'
 import { api } from './api'
 import {
   state,
@@ -486,7 +495,8 @@ const ui = reactive({
   delProject: false,
   demTool: false,
   subbasin: false,
-  timeseries: false
+  timeseries: false,
+  model: false
 })
 const form = reactive({ name: '', description: '', layerType: '', layerName: '', encoding: '' })
 const newMode = ref('blank')
@@ -565,6 +575,26 @@ const tsTitle = computed(() => {
 
 function subExport(fmt) {
   return state.project ? `/api/projects/${state.project.id}/subbasins/export.${fmt}` : '#'
+}
+
+// ---------------------------------------------------------------- 模型模拟
+const mdlTitle = computed(() => {
+  if (!state.subbasins) return '新安江三水源 + 马斯京根模拟：请先完成「子流域划分」'
+  const n = (state.subbasins.subbasins || []).length
+  const sim = state.simResult
+  if (!sim) return `按 ${n} 个预报单元演算区间产流并沿河链演算至各站出口`
+  const ok = (sim.units || []).filter((u) => (u.metrics || {}).nse >= 0.5).length
+  return `最近一次模拟：${sim.units.length} 个单元，NSE ≥ 0.5 的 ${ok} 个（${sim.period.start} ~ ${sim.period.end}）`
+})
+
+async function openModel() {
+  if (!state.project) return
+  if (!state.subbasins) {
+    // 没有预报单元时直接跳到子流域划分，避免用户看到空面板
+    await openSubbasin()
+    return
+  }
+  ui.model = true
 }
 
 async function openSubbasin() {
@@ -862,6 +892,13 @@ async function doRemoveDem() {
   height: 6px;
   border-radius: 50%;
   background: var(--green);
+  flex: 0 0 auto;
+}
+.mdl-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--primary);
   flex: 0 0 auto;
 }
 .sub-sec {

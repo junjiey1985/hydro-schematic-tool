@@ -102,5 +102,12 @@ export const api = {
   timeseriesClear: (pid, kind = '') =>
     request(`/api/projects/${pid}/timeseries${kind ? `?kind=${kind}` : ''}`, { method: 'DELETE' }),
   timeseriesDemo: (pid, payload = {}) =>
-    request(`/api/projects/${pid}/timeseries/demo`, { method: 'POST', body: payload })
+    request(`/api/projects/${pid}/timeseries/demo`, { method: 'POST', body: payload }),
+
+  // ---------------- 模型模拟与率定（P2：params / apply / simulate）
+  calibrationParams: (pid) => request(`/api/projects/${pid}/calibration/params`),
+  calibrationApply: (pid, payload = {}) =>
+    request(`/api/projects/${pid}/calibration/apply`, { method: 'POST', body: payload }),
+  calibrationSimulate: (pid, payload = {}) =>
+    request(`/api/projects/${pid}/calibration/simulate`, { method: 'POST', body: payload })
 }

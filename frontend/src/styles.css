@@ -395,3 +395,92 @@ input, select, textarea {
 .stat-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 10px; }
 .stat-grid .k { color: var(--text-2); font-size: 12px; }
 .stat-grid .v { font-weight: 600; text-align: right; }
+
+/* ---------------- 弹窗面板通用：区块标题 / 数据表 / 状态文字 / 链接按钮 ----------------
+   放在全局（非 scoped），供 App.vue 之外的独立组件（时序面板、模型面板等）复用；
+   组件内同名 scoped 规则仍然优先。 */
+.sub-sec {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-2);
+  margin: 4px 0 8px;
+  padding-bottom: 5px;
+  border-bottom: 1px dashed var(--line);
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+.sub-sec:not(:first-of-type) { margin-top: 16px; }
+
+.tbl-wrap {
+  max-height: 260px;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+}
+.tbl { width: 100%; border-collapse: collapse; font-size: 12px; }
+.tbl th {
+  position: sticky;
+  top: 0;
+  background: var(--panel-2);
+  color: var(--text-2);
+  font-weight: 600;
+  text-align: left;
+  padding: 6px 7px;
+  border-bottom: 1px solid var(--line);
+  white-space: nowrap;
+  z-index: 1;
+}
+.tbl td {
+  padding: 4px 7px;
+  border-bottom: 1px dashed var(--line);
+  white-space: nowrap;
+}
+.tbl tbody tr:hover { background: var(--primary-soft); }
+.tbl td.num { text-align: right; font-variant-numeric: tabular-nums; }
+.tbl td.small, .tbl td .small { font-size: 11px; }
+.tbl .dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+  margin-right: 5px;
+}
+.tbl input.mini {
+  width: 100%;
+  padding: 2px 5px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  outline: none;
+  text-align: right;
+}
+.tbl input.mini:hover { border-color: var(--line-strong); background: #fff; }
+.tbl input.mini:focus { border-color: var(--primary); background: #fff; }
+.tbl input.mini.bad { border-color: var(--accent); background: #fdf1ef; }
+
+.ok-t { color: var(--green); font-weight: 600; }
+.warn-t { color: var(--amber); font-weight: 600; }
+.bad-t { color: var(--accent); font-weight: 600; }
+.muted { color: var(--text-3); }
+
+.empty-line {
+  padding: 12px;
+  color: var(--text-3);
+  font-size: 12px;
+  text-align: center;
+  border: 1px dashed var(--line-strong);
+  border-radius: 7px;
+}
+.lnk {
+  border: none;
+  background: transparent;
+  color: var(--primary);
+  padding: 0 6px;
+  font-size: 12px;
+}
+.lnk:hover { text-decoration: underline; }
+.lnk.danger { color: var(--accent); }

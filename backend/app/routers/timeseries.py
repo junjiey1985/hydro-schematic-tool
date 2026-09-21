@@ -7,12 +7,14 @@
 """
 from __future__ import annotations
 
+import json
 import time
 from pathlib import Path
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 
 from .. import storage as st
+from ..core.model.simulate import truth_basin_flow
 from ..core.timeseries import (
     KIND_AGG,
     KIND_LABELS,
@@ -32,7 +34,7 @@ from ..core.timeseries import (
     series_entry,
     summarize,
 )
-from .deps import get_project_or_404
+from .deps import get_project_or_404, series_loader
 
 router = APIRouter(prefix="/api/projects", tags=["timeseries"])
 
@@ -217,11 +219,7 @@ def delete_series(pid: str, kind: str, key: str):
     if not entry:
         raise HTTPException(404, f"未找到序列 {kind}/{key}")
     path = st.project_dir(pid) / "timeseries" / entry["file"]
-    if path.exists():
-        try:
-            path.unlink()
-        except OSError:
-            pass
+    st.remove_file(path)
     st.save_ts_manifest(pid, manifest)
     return {"ok": True, "coverage": _rebuild_coverage(pid, manifest)}
 
@@ -240,7 +238,12 @@ def clear_timeseries(pid: str, kind: str = ""):
 # ---------------------------------------------------------------- 演示数据
 @router.post("/{pid}/timeseries/demo")
 def make_demo(pid: str, payload: dict | None = None):
-    """生成合成率定演示数据（降雨 / 流量 / 蒸发），覆盖当前划分的单元出口站。"""
+    """生成合成率定演示数据（降雨 / 蒸发 / 流量），覆盖当前划分的单元出口站。
+
+    流量不是随便造的：先用**真值参数**跑一遍本工具的新安江三水源 + 马斯京根模型
+    （观测系统模拟实验 OSSE），再叠加 5% 乘性噪声作为"实测"，因此后续率定任务
+    有明确的可回收基准（真值参数见响应 ``truth``）。
+    """
     get_project_or_404(pid)
     payload = payload or {}
     sub = st.read_subbasins(pid)
@@ -248,18 +251,42 @@ def make_demo(pid: str, payload: dict | None = None):
         raise HTTPException(400, "请先划分子流域（率定数据需按预报单元组织）")
     days = int(payload.get("days") or 1095)
     seed = int(payload.get("seed") or 20260921)
+    start = payload.get("start") or "2015-01-01"
     fresh = bool(payload.get("replace", True))
     if fresh:
         st.clear_ts(pid)
 
-    doc = demo_series(sub, days=days, seed=seed, start=payload.get("start") or "2015-01-01")
+    # ① 降雨 + 蒸发：纯合成
+    doc = demo_series(sub, days=days, seed=seed, start=start, flow_mode="model")
     created = {"rain": [], "flow": [], "evap": []}
-    for kind in KINDS:
+    for kind in ("rain", "evap"):
         for key, item in doc[kind].items():
             recs = item["records"]
-            step_s = detect_interval(recs)
-            entry = _save_series(pid, kind, key, item.get("name") or key, recs, step_s, "生成·演示数据", key)
+            entry = _save_series(pid, kind, key, item.get("name") or key, recs, detect_interval(recs), "生成·演示数据", key)
             created[kind].append({"key": key, "name": entry["name"], "count": entry["count"], "interval": entry["interval"]})
+
+    # ② 流量：用真值参数跑模型（OSSE），失败则回退到简化两层水库合成
+    manifest = st.read_ts_manifest(pid)
+    flows = truth_basin_flow(sub, manifest, series_loader(pid), seed=seed)
+    flow_source = "生成·真值模型"
+    if not flows:
+        fallback = demo_series(sub, days=days, seed=seed, start=start, flow_mode="simple")
+        flows = fallback["flow"]
+        flow_source = "生成·简化模型"
+    for key, item in flows.items():
+        recs = item["records"]
+        entry = _save_series(pid, "flow", key, item.get("name") or key, recs, detect_interval(recs), flow_source, key)
+        created["flow"].append({"key": key, "name": entry["name"], "count": entry["count"], "interval": entry["interval"]})
+
+    # ③ 真值存档，供 P3 率定回收比对
+    truth_path = st.project_dir(pid) / "calibration" / "demo_truth.json"
+    truth_path.parent.mkdir(parents=True, exist_ok=True)
+    truth_path.write_text(
+        json.dumps({"saved_at": st.now_iso(), "days": doc["days"], "start": doc["start"], **doc["truth"]},
+                   ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
     manifest = st.read_ts_manifest(pid)
     return {
         "ok": True,
@@ -267,7 +294,11 @@ def make_demo(pid: str, payload: dict | None = None):
         "start": doc["start"],
         "created": created,
         "truth": doc["truth"],
+        "flow_source": flow_source,
         "summary": summarize(manifest),
         "coverage": _rebuild_coverage(pid, manifest),
-        "note": f"已生成 {doc['days']} 天合成序列（真值参数：{doc['truth']}），可复用为率定验证基准",
+        "note": (
+            f"已生成 {doc['days']} 天合成序列；流量用真值参数跑模型生成（OSSE），"
+            f"真值参数可回收验证率定结果"
+        ),
     }

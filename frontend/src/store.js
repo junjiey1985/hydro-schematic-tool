@@ -15,6 +15,8 @@ export const state = reactive({
   subbasins: null,          // 子流域划分结果（含 subbasins / stats / rows）
   subOptions: null,         // /subbasins/options 返回的默认参数与候选控制断面
   timeseries: null,         // 时序数据清单 + 覆盖率（率定输入，/timeseries/manifest）
+  calibration: null,        // 模型参数集 + 参数规范（/calibration/params）
+  simResult: null,          // 最近一次模拟结果（/calibration/simulate）
   tab: 'map',
   selection: null,      // {source:'map'|'schematic', kind, layerId, featureId, ...}
   busy: '',
@@ -162,6 +164,8 @@ export async function openProject(pid) {
     state.schDirty = false
     state.subbasins = null
     state.timeseries = null
+    state.calibration = null
+    state.simResult = null
     state.dem = state.project.dem || null
     await refreshLayers()
     await loadAnalysis()
@@ -505,6 +509,34 @@ export async function makeDemoTimeseries(payload = {}) {
 /** 读取单条序列（供预览曲线）。 */
 export async function fetchSeries(kind, key, limit = 800) {
   return api.timeseriesSeries(projectId.value, kind, key, limit)
+}
+
+// ---------------------------------------------------------------- 模型模拟（P2）
+/** 单元参数集 + 参数规范（区间 / 标签 / 固定参数）。 */
+export async function loadCalibrationParams(force = false) {
+  if (!projectId.value) return null
+  if (!force && state.calibration) return state.calibration
+  state.calibration = await api.calibrationParams(projectId.value).catch(() => null)
+  return state.calibration
+}
+
+/** 保存参数集为项目默认；传 reset=true 恢复默认参数。 */
+export async function saveCalibrationParams(params = null, { reset = false } = {}) {
+  return withBusy(reset ? '正在恢复默认参数…' : '正在保存参数…', async () => {
+    const r = await api.calibrationApply(projectId.value, reset ? { reset: true } : { params })
+    state.calibration = await api.calibrationParams(projectId.value).catch(() => state.calibration)
+    toast(reset ? '已恢复默认参数' : '参数已保存为项目默认', 'ok')
+    return r
+  })
+}
+
+/** 运行全流域模拟：返回 { units, water_balance, ... }，同时写入 state.simResult。 */
+export async function runSimulation(payload = {}) {
+  return withBusy('正在模拟（新安江 + 马斯京根）…', async () => {
+    const r = await api.calibrationSimulate(projectId.value, payload)
+    state.simResult = r
+    return r
+  })
 }
 
 /** 确保存在「控制断面」图层，供手工划分使用；返回该图层。 */
