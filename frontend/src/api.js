@@ -82,5 +82,25 @@ export const api = {
   patchSubbasin: (pid, code, patch) =>
     request(`/api/projects/${pid}/subbasins/${encodeURIComponent(code)}`, { method: 'PATCH', body: patch }),
   clearSubbasins: (pid) => request(`/api/projects/${pid}/subbasins`, { method: 'DELETE' }),
-  subbasinsUrl: (pid, fmt = 'geo') => `/api/projects/${pid}/subbasins/export.${fmt}`
+  subbasinsUrl: (pid, fmt = 'geo') => `/api/projects/${pid}/subbasins/export.${fmt}`,
+
+  // ---------------- 时序数据（率定输入）
+  timeseriesManifest: (pid) => request(`/api/projects/${pid}/timeseries/manifest`),
+  timeseriesImport: (pid, files, { kind = 'rain', interval = '', station = '', encoding = '' } = {}) => {
+    const fd = new FormData()
+    for (const f of files) fd.append('files', f)
+    fd.append('kind', kind)
+    fd.append('interval', interval)
+    fd.append('station', station)
+    fd.append('encoding', encoding)
+    return request(`/api/projects/${pid}/timeseries/import`, { method: 'POST', form: fd })
+  },
+  timeseriesSeries: (pid, kind, key, limit = 0) =>
+    request(`/api/projects/${pid}/timeseries/${kind}/${encodeURIComponent(key)}?limit=${limit}`),
+  timeseriesDelete: (pid, kind, key) =>
+    request(`/api/projects/${pid}/timeseries/${kind}/${encodeURIComponent(key)}`, { method: 'DELETE' }),
+  timeseriesClear: (pid, kind = '') =>
+    request(`/api/projects/${pid}/timeseries${kind ? `?kind=${kind}` : ''}`, { method: 'DELETE' }),
+  timeseriesDemo: (pid, payload = {}) =>
+    request(`/api/projects/${pid}/timeseries/demo`, { method: 'POST', body: payload })
 }

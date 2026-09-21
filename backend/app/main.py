@@ -11,7 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 
 from .config import FRONTEND_DIST
-from .routers import analysis, dem_api, layers, projects, subbasins
+from .routers import analysis, dem_api, layers, projects, subbasins, timeseries
 
 app = FastAPI(
     title="水系概化图工具",
@@ -28,6 +28,7 @@ app.add_middleware(
 )
 
 app.include_router(projects.router)
+app.include_router(timeseries.router)
 app.include_router(layers.router)
 app.include_router(analysis.router)
 app.include_router(dem_api.router)

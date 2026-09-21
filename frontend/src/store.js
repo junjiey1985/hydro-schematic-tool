@@ -14,6 +14,7 @@ export const state = reactive({
   dem: null,
   subbasins: null,          // 子流域划分结果（含 subbasins / stats / rows）
   subOptions: null,         // /subbasins/options 返回的默认参数与候选控制断面
+  timeseries: null,         // 时序数据清单 + 覆盖率（率定输入，/timeseries/manifest）
   tab: 'map',
   selection: null,      // {source:'map'|'schematic', kind, layerId, featureId, ...}
   busy: '',
@@ -160,6 +161,7 @@ export async function openProject(pid) {
     state.schematicWorking = null
     state.schDirty = false
     state.subbasins = null
+    state.timeseries = null
     state.dem = state.project.dem || null
     await refreshLayers()
     await loadAnalysis()
@@ -441,6 +443,68 @@ export async function clearSubbasins() {
     updateStats()
     toast('已清除子流域划分', 'ok')
   })
+}
+
+// ---------------------------------------------------------------- 时序数据（率定输入）
+export const timeseriesSeries = computed(() => {
+  const d = state.timeseries
+  if (!d) return { rain: [], flow: [], evap: [] }
+  return d.series || { rain: [], flow: [], evap: [] }
+})
+
+/** 时序数据清单 + 覆盖率检查（率定工作台「数据检查」）。 */
+export async function loadTimeseries(force = false) {
+  if (!projectId.value) return null
+  if (!force && state.timeseries) return state.timeseries
+  state.timeseries = await api.timeseriesManifest(projectId.value).catch(() => null)
+  return state.timeseries
+}
+
+export async function importTimeseries(files, opts = {}) {
+  return withBusy('正在导入时序数据…', async () => {
+    const r = await api.timeseriesImport(projectId.value, files, opts)
+    const kindLabel = r.kind_label || ''
+    const n = (r.imported || []).length
+    if (n) {
+      const warn = (r.imported || []).filter((i) => i.status !== 'ok').length
+      toast(
+        `已导入 ${n} 条${kindLabel}序列${warn ? `（${warn} 条缺测偏多）` : ''}`,
+        warn ? 'warn' : 'ok',
+        4200
+      )
+    }
+    if ((r.skipped || []).length) {
+      toast(`跳过 ${r.skipped.length} 个文件：${r.skipped[0].error}`, 'warn', 5200)
+    }
+    await loadTimeseries(true)
+    return r
+  })
+}
+
+export async function deleteTimeseries(kind, key) {
+  await api.timeseriesDelete(projectId.value, kind, key)
+  await loadTimeseries(true)
+  toast(`已删除序列 ${key}`, 'ok')
+}
+
+export async function clearTimeseries(kind = '') {
+  await api.timeseriesClear(projectId.value, kind)
+  await loadTimeseries(true)
+  toast(kind ? '已清空该类型序列' : '已清空全部时序数据', 'ok')
+}
+
+export async function makeDemoTimeseries(payload = {}) {
+  return withBusy('正在生成合成率定数据（降水→两层水库产汇流）…', async () => {
+    const r = await api.timeseriesDemo(projectId.value, payload)
+    await loadTimeseries(true)
+    toast(r.note || '演示数据已生成', 'ok', 5200)
+    return r
+  })
+}
+
+/** 读取单条序列（供预览曲线）。 */
+export async function fetchSeries(kind, key, limit = 800) {
+  return api.timeseriesSeries(projectId.value, kind, key, limit)
 }
 
 /** 确保存在「控制断面」图层，供手工划分使用；返回该图层。 */

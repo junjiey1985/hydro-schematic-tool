@@ -27,6 +27,11 @@
         子流域划分
       </button>
 
+      <button class="btn sm" :disabled="!state.project" :title="tsTitle" @click="ui.timeseries = true">
+        <span v-if="tsReady" class="ts-dot"></span>
+        时序数据
+      </button>
+
       <div class="spacer"></div>
 
       <span v-if="state.topology" class="tag ok">
@@ -83,6 +88,9 @@
 
     <!-- ============ 提示 ============ -->
     <div v-if="state.toast.show" class="toast" :class="state.toast.type">{{ state.toast.text }}</div>
+
+    <!-- ============ 时序数据（率定输入） ============ -->
+    <TimeseriesPanel :show="ui.timeseries" @close="ui.timeseries = false" />
 
     <!-- ============ 删除项目 ============ -->
     <div v-if="ui.delProject" class="mask" @click.self="ui.delProject = false">
@@ -445,6 +453,7 @@ import { computed, onMounted, reactive, ref, watch } from 'vue'
 import MapView from './components/MapView.vue'
 import SchematicView from './components/SchematicView.vue'
 import SidePanel from './components/SidePanel.vue'
+import TimeseriesPanel from './components/TimeseriesPanel.vue'
 import { api } from './api'
 import {
   state,
@@ -466,7 +475,8 @@ import {
   loadSubbasinOptions,
   pickSubbasin,
   renameSubbasin,
-  subbasinColorOf
+  subbasinColorOf,
+  loadTimeseries
 } from './store'
 
 const ui = reactive({
@@ -475,7 +485,8 @@ const ui = reactive({
   topoOptions: false,
   delProject: false,
   demTool: false,
-  subbasin: false
+  subbasin: false,
+  timeseries: false
 })
 const form = reactive({ name: '', description: '', layerType: '', layerName: '', encoding: '' })
 const newMode = ref('blank')
@@ -533,6 +544,24 @@ const subTitle = computed(() =>
     ? `已划分 ${subList.value.length} 个预报单元，点击可重新划分或导出`
     : '把流域按控制断面切分为若干预报单元（子流域）'
 )
+
+// ---------------------------------------------------------------- 时序数据
+const tsReady = computed(() => {
+  const c = state.timeseries && state.timeseries.coverage
+  const s = c && c.summary
+  return !!(s && s.subbasin_count && s.calibratable === s.subbasin_count)
+})
+
+const tsTitle = computed(() => {
+  const d = state.timeseries
+  if (!d || !d.exists) return '导入降雨 / 流量 / 蒸发时序数据（率定的输入）'
+  const s = d.summary || {}
+  const c = d.coverage && d.coverage.summary
+  const span = s.span && s.span.start ? `${s.span.start} ~ ${s.span.end}` : ''
+  return `已导入 ${(s.counts && s.counts.rain) || 0} 条降雨 / ${(s.counts && s.counts.flow) || 0} 条流量序列${
+    span ? `（${span}）` : ''
+  }${c ? `；可率定单元 ${c.calibratable}/${c.subbasin_count}` : ''}`
+})
 
 function subExport(fmt) {
   return state.project ? `/api/projects/${state.project.id}/subbasins/export.${fmt}` : '#'
@@ -642,6 +671,15 @@ onMounted(() => {
       samplesOk.value = false
     })
 })
+
+// 项目切换后拉一次时序清单，让顶栏「时序数据」按钮能显示可率定状态
+watch(
+  () => (state.project ? state.project.id : null),
+  (pid) => {
+    if (pid) loadTimeseries(true).catch(() => {})
+  },
+  { immediate: true }
+)
 
 const sampleLayerNames = computed(() => {
   const ls = (samplesInfo.value && samplesInfo.value.layers) || []
@@ -817,6 +855,13 @@ async function doRemoveDem() {
   height: 6px;
   border-radius: 50%;
   background: #4f7fd4;
+  flex: 0 0 auto;
+}
+.ts-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--green);
   flex: 0 0 auto;
 }
 .sub-sec {

@@ -293,6 +293,56 @@ def read_dem_meta(pid: str) -> Optional[dict]:
     return _read_json(dem_dir(pid) / "meta.json")
 
 
+# ---------------------------------------------------------------- 时序数据（率定输入）
+# 结构：timeseries/<kind>/<station_key>.csv + timeseries/manifest.json
+def ts_dir(pid: str, kind: str | None = None) -> Path:
+    d = project_dir(pid) / "timeseries"
+    if kind:
+        d = d / kind
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def ts_series_path(pid: str, kind: str, key: str) -> Path:
+    safe = "".join(ch if ch.isalnum() or ch in "-_.()" else "_" for ch in str(key)) or "series"
+    return ts_dir(pid, kind) / f"{safe}.csv"
+
+
+def read_ts_manifest(pid: str) -> dict:
+    from .core.timeseries import empty_manifest
+
+    doc = _read_json(project_dir(pid) / "timeseries" / "manifest.json")
+    if not doc:
+        return empty_manifest()
+    doc.setdefault("series", {})
+    for kind in ("rain", "flow", "evap"):
+        doc["series"].setdefault(kind, {})
+    return doc
+
+
+def save_ts_manifest(pid: str, manifest: dict) -> dict:
+    _write_json(project_dir(pid) / "timeseries" / "manifest.json", manifest)
+    touch_project(pid)
+    return manifest
+
+
+def clear_ts(pid: str, kind: str | None = None) -> None:
+    """清空某类（或全部）时序数据与清单条目。"""
+    import shutil as _shutil
+
+    d = ts_dir(pid, kind) if kind else ts_dir(pid)
+    if d.exists():
+        _shutil.rmtree(d, ignore_errors=True)
+    if kind:
+        m = read_ts_manifest(pid)
+        m["series"][kind] = {}
+        save_ts_manifest(pid, m)
+    else:
+        p = project_dir(pid) / "timeseries" / "manifest.json"
+        if p.exists():
+            p.unlink()
+
+
 # ---------------------------------------------------------------- 内部
 def _extent_of(features: list[dict]) -> Optional[list[float]]:
     xs: list[float] = []
