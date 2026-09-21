@@ -41,7 +41,8 @@ def _write_json(path: Path, obj: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")
     with tmp.open("w", encoding="utf-8") as f:
-        json.dump(obj, f, ensure_ascii=False, indent=2)
+        # default=str：后台线程落盘时个别残留对象（datetime / numpy 标量）不致让整个结果丢失
+        json.dump(obj, f, ensure_ascii=False, indent=2, default=str)
     tmp.replace(path)
 
 
@@ -324,6 +325,26 @@ def save_ts_manifest(pid: str, manifest: dict) -> dict:
     _write_json(project_dir(pid) / "timeseries" / "manifest.json", manifest)
     touch_project(pid)
     return manifest
+
+
+def cal_runs_dir(pid: str) -> Path:
+    return project_dir(pid) / "calibration" / "runs"
+
+
+def cal_run_dir(pid: str, rid: str) -> Path:
+    safe = "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in str(rid)) or "run"
+    return cal_runs_dir(pid) / safe
+
+
+def read_json_file(path) -> dict | None:
+    doc = _read_json(Path(path))
+    return doc if isinstance(doc, dict) else None
+
+
+def write_json_file(path, doc: dict) -> None:
+    p = Path(path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    _write_json(p, doc)
 
 
 def remove_file(path) -> bool:

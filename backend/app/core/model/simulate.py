@@ -61,21 +61,16 @@ def _outlet_xy(sb: dict) -> dict:
     return {"lon": o.get("lon"), "lat": o.get("lat")}
 
 
-def simulate_basin(
+def _prepare_inputs(
     subbasins_doc: dict,
     manifest: dict,
     series_loader,
-    params: dict | None = None,
     period: dict | None = None,
-    return_raw: bool = False,
 ) -> dict:
-    """全流域模拟。
+    """模拟与率定目标**共用的前置装配**：时段轴 / 蒸发 / 逐单元面雨量。
 
-    - subbasins_doc: storage.read_subbasins() 结果
-    - manifest: 时序清单（用其统计的起止与时段）
-    - series_loader(kind, key) -> [(dt, value)]：序列读取回调
-    - params: {unit_code: {K,B,SM,EX,KGF,CG,CI,CS,XE,KE?}}（缺省补默认）
-    - period: {"start","end","warmup_days"}（可选）
+    这是最重的开销（读序列 + 逐时段泰森加权装配，~0.5 s），率定时必须只做一次，
+    之后每次目标评估只跑模型核（~6 ms）。返回 dict，失败时 ``{"ok": False, "error": ...}``。
     """
     sbs = sorted(subbasins_doc.get("subbasins", []), key=lambda s: (s.get("order_index") or 0))
     if not sbs:
@@ -104,12 +99,13 @@ def simulate_basin(
         return {"ok": False, "error": f"模拟时段过短（仅 {n} 个时段）"}
 
     warnings: list[str] = []
+    cache: dict[str, dict] = {}
 
-    def loader_cached(kind, key, _cache={}):
+    def loader_cached(kind: str, key: str) -> dict:
         ck = f"{kind}/{key}"
-        if ck not in _cache:
-            _cache[ck] = _series_map(series_loader(kind, key))
-        return _cache[ck]
+        if ck not in cache:
+            cache[ck] = _series_map(series_loader(kind, key))
+        return cache[ck]
 
     # ---------------- 蒸发
     if evap_items:
@@ -154,7 +150,157 @@ def simulate_basin(
         if miss:
             warnings.append(f"{sb['code']}: {miss} 个时段面雨量缺测，按 0 处理")
 
-    e_arr = e_arr if len(e_arr) == n else np.full(n, 3.0)
+    return {
+        "ok": True,
+        "sbs": sbs,
+        "axis": axis,
+        "times": [dt.strftime("%Y-%m-%d %H:%M") for dt in axis],
+        "n": n,
+        "step_s": step_s,
+        "dt_h": dt_h,
+        "dt_s": dt_s,
+        "e_arr": e_arr if len(e_arr) == n else np.full(n, 3.0),
+        "unit_rain": unit_rain,
+        "loader_cached": loader_cached,
+        "warnings": warnings,
+    }
+
+
+def unit_context(
+    subbasins_doc: dict,
+    manifest: dict,
+    series_loader,
+    code: str,
+    period: dict | None = None,
+) -> dict:
+    """为**单个单元**的率定目标函数预计算全部固定量（只做一次，之后每次评估仅跑模型核）。
+
+    返回 dict：``{code, name, area_km2, dt_s, dt_h, p(面雨量), e(蒸发), times,
+    upstream[{code, ke, q?}], obs, outlet_station, i0}``。
+    ``upstream[].q`` 由链式率定在率定到该单元前填入（上游已率定的出流）。
+    """
+    ctx = _prepare_inputs(subbasins_doc, manifest, series_loader, period)
+    if not ctx.get("ok"):
+        return ctx
+    sbs, axis, times, n = ctx["sbs"], ctx["axis"], ctx["times"], ctx["n"]
+    dt_h = ctx["dt_h"]
+    sb = next((s for s in sbs if s.get("code") == code), None)
+    if sb is None:
+        return {"ok": False, "error": f"未找到预报单元 {code}"}
+    area = float(sb.get("area_km2") or 0.0)
+    if area <= 0:
+        return {"ok": False, "error": f"{code} 单元面积异常"}
+
+    # 直接上游：演算河段 KE 只依赖几何与时段（XE 属本单元参数，评估时才代入）
+    upstream = []
+    for other in sbs:
+        if other.get("parent") != code:
+            continue
+        rp = reach_params(_outlet_xy(other), _outlet_xy(sb), dt_h, 0.2)
+        upstream.append({"code": other["code"], "ke": rp["KE"], "q": None})
+
+    # 出口站实测
+    obs = None
+    o_station = sb.get("outlet_station") or {}
+    o_sid = o_station.get("id") or (sb.get("outlet") or {}).get("control_id")
+    o_sname = o_station.get("name") or (sb.get("outlet") or {}).get("control")
+    if o_sid or o_sname:
+        flow_keys = list((manifest.get("series", {}).get("flow") or {}).keys())
+        fk = match_series_key(flow_keys, o_sid or "", o_sname or "")
+        if fk:
+            obs_map = ctx["loader_cached"]("flow", fk)
+            obs = np.array([obs_map.get(dt, np.nan) for dt in axis], dtype=float)
+
+    warmup_days = int((period or {}).get("warmup_days") or 0)
+    i0 = min(max(int(warmup_days * 3600.0 / ctx["step_s"]), 0), max(0, n - 10))
+
+    out = {
+        "ok": True,
+        "code": code,
+        "name": sb.get("name"),
+        "area_km2": area,
+        "dt_s": ctx["dt_s"],
+        "dt_h": dt_h,
+        "step_s": ctx["step_s"],
+        "n": n,
+        "times": times,
+        "p": ctx["unit_rain"].get(code, np.zeros(n)),
+        "e": ctx["e_arr"],
+        "upstream": upstream,
+        "has_upstream": bool(upstream),
+        "obs": obs,
+        "outlet_station": o_sname or None,
+        "outlet_station_id": o_sid or None,
+        "i0": i0,
+        "warnings": list(ctx["warnings"]),
+    }
+    return out
+
+
+def eval_unit(ctx: dict, params: dict) -> dict:
+    """用给定参数评估单个单元（率定目标的热路径，~6 ms）。
+
+    需 ``ctx`` 由 :func:`unit_context` 生成，且 ``ctx["upstream"][i]["q"]`` 已填入
+    上游已率定的出流。返回 ``{q(全时段 m³/s), balance}``。
+    """
+    prm = sanitize_params(params)
+    res = simulate_unit(ctx["p"], ctx["e"], prm)
+    q_out = res["q"] * ctx["area_km2"] * MM_PER_STEP_TO_M3S / ctx["dt_s"]
+    for up in ctx.get("upstream") or []:
+        if up.get("q") is None:
+            continue
+        q_out = q_out + routing.muskingum_route(up["q"], up["ke"], prm["XE"], ctx["dt_h"])
+    return {"q": q_out, "balance": res["balance"], "params": prm}
+
+
+def metrics_of(ctx: dict, q: np.ndarray, i_start: int | None = None, i_end: int | None = None) -> dict | None:
+    """单元出口的指标（默认暖期起至序列末尾），并把峰现时段换算为实际时刻。"""
+    obs = ctx.get("obs")
+    if obs is None:
+        return None
+    n = ctx["n"]
+    a = ctx["i0"] if i_start is None else min(max(int(i_start), 0), n)
+    b = n if i_end is None else min(max(int(i_end), a), n)
+    o = np.asarray(obs)[a:b]
+    s = np.asarray(q)[a:b]
+    valid = np.isfinite(o) & np.isfinite(s)
+    t_valid = [t for t, m in zip(ctx["times"][a:b], valid) if m]
+    met = all_metrics(o[valid], s[valid], dt_label=f"{ctx['step_s'] / 3600:g}h")
+    pe = met.get("peak_error")
+    if pe:
+        for e in pe.get("events") or []:
+            if 0 <= e["obs_step"] < len(t_valid):
+                e["obs_time"] = t_valid[e["obs_step"]]
+            if 0 <= e["sim_step"] < len(t_valid):
+                e["sim_time"] = t_valid[e["sim_step"]]
+    return met
+
+
+def simulate_basin(
+    subbasins_doc: dict,
+    manifest: dict,
+    series_loader,
+    params: dict | None = None,
+    period: dict | None = None,
+    return_raw: bool = False,
+) -> dict:
+    """全流域模拟。
+
+    - subbasins_doc: storage.read_subbasins() 结果
+    - manifest: 时序清单（用其统计的起止与时段）
+    - series_loader(kind, key) -> [(dt, value)]：序列读取回调
+    - params: {unit_code: {K,B,SM,EX,KGF,CG,CI,CS,XE,KE?}}（缺省补默认）
+    - period: {"start","end","warmup_days"}（可选）
+    """
+    ctx = _prepare_inputs(subbasins_doc, manifest, series_loader, period)
+    if not ctx.get("ok"):
+        return ctx
+    sbs = ctx["sbs"]
+    axis, times, n = ctx["axis"], ctx["times"], ctx["n"]
+    step_s, dt_h, dt_s = ctx["step_s"], ctx["dt_h"], ctx["dt_s"]
+    e_arr, unit_rain = ctx["e_arr"], ctx["unit_rain"]
+    loader_cached = ctx["loader_cached"]
+    warnings = list(ctx["warnings"])
 
     # ---------------- 逐单元（排水序）演算
     unit_q: dict[str, np.ndarray] = {}
@@ -219,7 +365,6 @@ def simulate_basin(
     # ---------------- 指标（剔除暖期）与序列抽稀
     warmup_days = int((period or {}).get("warmup_days") or 0)
     i0 = min(max(int(warmup_days * 3600.0 / step_s), 0), max(0, n - 10))
-    times = [dt.strftime("%Y-%m-%d %H:%M") for dt in axis]
 
     out_units = []
     for u in unit_info:
@@ -272,6 +417,7 @@ def simulate_basin(
         # 内部使用（真值流量生成 / 率定目标函数），不参与 JSON 序列化
         out["_raw"] = {
             "axis": axis,
+            "times": times,
             "units": [
                 {
                     "code": u["code"],
