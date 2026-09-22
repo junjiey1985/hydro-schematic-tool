@@ -286,6 +286,22 @@ def run_calibration(
         std_obs = float(np.std(o_cal[np.isfinite(o_cal)])) if len(o_cal) else 0.0
         keys, bounds = free_spec_for(ctx, lock.get(code))
 
+        if not keys:
+            # 全部参数被锁定：没有可优化的维度，直接用锁定值演算（不空跑 SCE-UA）
+            ev = eval_unit(ctx, base_prm)
+            qs[code] = ev["q"]
+            units_out.append(
+                {
+                    "code": code, "name": ctx.get("name"), "area_km2": ctx["area_km2"],
+                    "params": base_prm, "borrowed_from": None, "calibrated": False,
+                    "note": "该单元全部参数被锁定，未做优化（沿用表内取值）",
+                    "evals": 0, "gens": 0, "elapsed_s": 0.0,
+                    "status": "locked", "convergence": [],
+                }
+            )
+            emit({"phase": "skip", "unit": code, "reason": "全部参数被锁定"})
+            continue
+
         def F(xvec, _ctx=ctx, _keys=keys, _i0=i0, _i1=i_split, _std=std_obs):
             prm = {k: float(v) for k, v in zip(_keys, xvec)}
             ev = eval_unit(_ctx, prm)

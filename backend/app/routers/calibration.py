@@ -197,12 +197,24 @@ def _worker(pid: str, rid: str, cfg: dict, sub: dict) -> None:
         "run_id": rid, "pid": pid, "status": "running", "phase": "prepare",
         "unit": None, "units_done": [], "gen": 0, "evals": 0, "best_f": None,
         "best": None, "started_at": st.now_iso(), "elapsed_s": 0.0, "error": None,
+        "history": [],          # 逐代收敛历史（运行中即可画收敛曲线）
+        "free_keys": [], "units_plan": [s["code"] for s in (sub.get("subbasins") or [])],
     }
 
     def on_progress(payload: dict):
         prog.update(payload)
         prog["elapsed_s"] = round(time.time() - started, 1)
-        if payload.get("phase") == "done" and payload.get("unit"):
+        ph = payload.get("phase")
+        if ph == "run" and payload.get("unit"):
+            hist = prog.get("history")
+            if not isinstance(hist, list):
+                hist = []
+                prog["history"] = hist
+            hist.append({
+                "unit": payload["unit"], "gen": payload.get("gen"),
+                "evals": payload.get("evals"), "best_f": payload.get("best_f"),
+            })
+        elif ph == "done" and payload.get("unit"):
             done = list(prog.get("units_done") or [])
             if payload["unit"] not in done:
                 done.append(payload["unit"])
@@ -334,9 +346,13 @@ def list_runs(pid: str):
     rdir = st.cal_runs_dir(pid)
     out = []
     if rdir.exists():
-        for d in sorted(rdir.iterdir(), reverse=True):
-            if not d.is_dir():
-                continue
+        dirs = [d for d in rdir.iterdir() if d.is_dir()]
+        # rid 是随机十六进制，按目录名排序≠按时间排序；以 progress.started_at 为准（新→旧）
+        def _key(d):
+            prog = st.read_json_file(d / "progress.json") or {}
+            return prog.get("started_at") or ""
+
+        for d in sorted(dirs, key=_key, reverse=True):
             prog = st.read_json_file(d / "progress.json") or {}
             cfg = st.read_json_file(d / "config.json") or {}
             has_result = (d / "result.json").exists()
@@ -419,11 +435,35 @@ def run_result(pid: str, rid: str):
 
 @router.get("/{pid}/calibration/runs/{rid}/convergence")
 def run_convergence(pid: str, rid: str):
-    """轻量接口：只返回收敛曲线（供进度页画图，不拖全量结果）。"""
+    """收敛曲线（轻量接口，**运行中即可用**，不拖全量结果）。
+
+    任务结束后优先返回 result.json 各单元完整的收敛史；运行中则把 progress.json
+    累积的逐代历史按单元分组返回（前端可实时画曲线）。
+    """
     get_project_or_404(pid)
     doc = st.read_json_file(st.cal_run_dir(pid, rid) / "result.json")
     if doc:
-        return {"ok": True,
-                "curve": [{"code": u["code"], "points": u.get("convergence") or []} for u in doc.get("units") or []]}
-    prog = _read_progress(pid, rid) or {}
-    raise HTTPException(409, f"结果尚未生成（任务状态：{prog.get('status')}）")
+        return {
+            "ok": True, "finished": True,
+            "curve": [
+                {"code": u["code"], "points": u.get("convergence") or []}
+                for u in doc.get("units") or []
+            ],
+        }
+    prog = _read_progress(pid, rid)
+    if not prog:
+        raise HTTPException(404, f"任务不存在: {rid}")
+    grouped: dict[str, list] = {}
+    for h in prog.get("history") or []:
+        grouped.setdefault(h.get("unit") or "?", []).append(
+            {"gen": h.get("gen"), "best_f": h.get("best_f"), "evals": h.get("evals")}
+        )
+    return {
+        "ok": True, "finished": False,
+        "status": prog.get("status"), "phase": prog.get("phase"),
+        "unit": prog.get("unit"), "units_done": prog.get("units_done") or [],
+        "units_plan": prog.get("units_plan") or [],
+        "free_keys": prog.get("free_keys") or [],
+        "evals": prog.get("evals"), "elapsed_s": prog.get("elapsed_s"),
+        "curve": [{"code": c, "points": pts} for c, pts in grouped.items()],
+    }

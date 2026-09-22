@@ -17,6 +17,15 @@ export const state = reactive({
   timeseries: null,         // 时序数据清单 + 覆盖率（率定输入，/timeseries/manifest）
   calibration: null,        // 模型参数集 + 参数规范（/calibration/params）
   simResult: null,          // 最近一次模拟结果（/calibration/simulate）
+  calib: {                  // 率定任务视图（P3 后端接口）
+    rid: '',                // 当前任务 run_id
+    status: null,           // /status（progress.json 内容）
+    convergence: null,      // /convergence（运行中即可用）
+    result: null,           // /result（结束后）
+    runs: [],               // 历次任务列表
+    error: '',              // 任务级错误
+    poll: 0                 // 轮询定时器 id
+  },
   tab: 'map',
   selection: null,      // {source:'map'|'schematic', kind, layerId, featureId, ...}
   busy: '',
@@ -166,6 +175,7 @@ export async function openProject(pid) {
     state.timeseries = null
     state.calibration = null
     state.simResult = null
+    clearCalibRun()
     state.dem = state.project.dem || null
     await refreshLayers()
     await loadAnalysis()
@@ -537,6 +547,109 @@ export async function runSimulation(payload = {}) {
     state.simResult = r
     return r
   })
+}
+
+// ---------------------------------------------------------------- 率定任务（P3）
+/** 历次率定任务（新→旧）。 */
+export async function loadCalibrationRuns() {
+  if (!projectId.value) return []
+  state.calib.runs = ((await api.calibrationRuns(projectId.value).catch(() => null)) || {}).runs || []
+  return state.calib.runs
+}
+
+function stopPolling() {
+  if (state.calib.poll) {
+    clearInterval(state.calib.poll)
+    state.calib.poll = 0
+  }
+}
+
+/** 启动链式率定并开始轮询进度；返回 run_id。 */
+export async function startCalibration(payload = {}) {
+  stopPolling()
+  const r = await api.calibrationRun(projectId.value, payload)
+  state.calib.rid = r.run_id
+  state.calib.status = null
+  state.calib.convergence = null
+  state.calib.result = null
+  state.calib.error = ''
+  state.calib.poll = setInterval(() => pollCalibration(), 1200)
+  await pollCalibration()
+  return r.run_id
+}
+
+/** 轮询一次任务进度；任务结束后自动拉取结果并停止轮询。 */
+export async function pollCalibration() {
+  const rid = state.calib.rid
+  if (!rid || !projectId.value) return null
+  let st = null
+  try {
+    st = await api.calibrationStatus(projectId.value, rid)
+  } catch (e) {
+    state.calib.error = e.message || String(e)
+    stopPolling()
+    return null
+  }
+  state.calib.status = st
+  try {
+    state.calib.convergence = await api.calibrationConvergence(projectId.value, rid)
+  } catch (e) {
+    /* 曲线拿不到不影响进度显示 */
+  }
+  if (st.phase === 'finished' || st.phase === 'failed') {
+    stopPolling()
+    if (st.phase === 'finished' && st.result_ready) {
+      await loadCalibrationResult(rid)
+    }
+    if (st.error) state.calib.error = st.error
+    await loadCalibrationRuns()
+  }
+  return st
+}
+
+/** 终止当前率定任务（当前代结束后退出）。 */
+export async function stopCalibration() {
+  const rid = state.calib.rid
+  if (!rid) return null
+  const r = await api.calibrationStop(projectId.value, rid).catch((e) => {
+    toast(e.message || '终止失败', 'warn')
+    return null
+  })
+  if (r) toast(r.stopped ? '已请求终止，等待当前代结束' : '任务已不在运行', 'info')
+  await pollCalibration()
+  return r
+}
+
+/** 读取率定结果（参数表 + 分期指标 + 收敛史 + 权威复算）。 */
+export async function loadCalibrationResult(rid) {
+  if (!projectId.value) return null
+  try {
+    state.calib.result = await api.calibrationResult(projectId.value, rid)
+  } catch (e) {
+    state.calib.error = e.message || String(e)
+    state.calib.result = null
+  }
+  return state.calib.result
+}
+
+/** 采纳某次率定的最终参数为项目默认参数集。 */
+export async function adoptCalibrationResult(rid) {
+  return withBusy('正在采纳率定参数…', async () => {
+    await api.calibrationApply(projectId.value, { run_id: rid })
+    state.calibration = await api.calibrationParams(projectId.value).catch(() => state.calibration)
+    toast('已采纳为项目默认参数', 'ok')
+    return state.calibration
+  })
+}
+
+/** 清空前端率定任务视图（不动后端记录）。 */
+export function clearCalibRun() {
+  stopPolling()
+  state.calib.rid = ''
+  state.calib.status = null
+  state.calib.convergence = null
+  state.calib.result = null
+  state.calib.error = ''
 }
 
 /** 确保存在「控制断面」图层，供手工划分使用；返回该图层。 */

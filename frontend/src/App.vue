@@ -32,9 +32,10 @@
         时序数据
       </button>
 
-      <button class="btn sm" :disabled="!state.project" :title="mdlTitle" @click="openModel">
-        <span v-if="state.simResult" class="mdl-dot"></span>
-        模型模拟
+      <button class="btn sm mdl-open" :disabled="!state.project" :title="mdlTitle" @click="openModel">
+        <span v-if="calibRunning" class="mdl-dot run"></span>
+        <span v-else-if="state.calib.result || state.simResult" class="mdl-dot"></span>
+        模型与率定
       </button>
 
       <div class="spacer"></div>
@@ -97,8 +98,8 @@
     <!-- ============ 时序数据（率定输入） ============ -->
     <TimeseriesPanel :show="ui.timeseries" @close="ui.timeseries = false" />
 
-    <!-- ============ 模型模拟（新安江 + 马斯京根） ============ -->
-    <ModelPanel :show="ui.model" @close="ui.model = false" />
+    <!-- ============ 模型模拟与参数率定（新安江 + 马斯京根 + SCE-UA） ============ -->
+    <ModelCalibPanel :show="ui.model" @close="ui.model = false" />
 
     <!-- ============ 删除项目 ============ -->
     <div v-if="ui.delProject" class="mask" @click.self="ui.delProject = false">
@@ -457,12 +458,13 @@
 </template>
 
 <script setup>
-import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { computed, defineAsyncComponent, onMounted, reactive, ref, watch } from 'vue'
 import MapView from './components/MapView.vue'
 import SchematicView from './components/SchematicView.vue'
 import SidePanel from './components/SidePanel.vue'
 import TimeseriesPanel from './components/TimeseriesPanel.vue'
-import ModelPanel from './components/ModelPanel.vue'
+// 模型率定面板体积较大（含 ECharts）：按需异步加载，不进首屏 bundle
+const ModelCalibPanel = defineAsyncComponent(() => import('./components/ModelCalibPanel.vue'))
 import { api } from './api'
 import {
   state,
@@ -578,9 +580,26 @@ function subExport(fmt) {
 }
 
 // ---------------------------------------------------------------- 模型模拟
+const calibRunning = computed(() => {
+  const st = state.calib.status
+  return !!(st && st.status === 'running' && st.phase !== 'finished')
+})
+
 const mdlTitle = computed(() => {
-  if (!state.subbasins) return '新安江三水源 + 马斯京根模拟：请先完成「子流域划分」'
+  if (!state.subbasins) return '新安江三水源 + 马斯京根模拟与 SCE-UA 率定：请先完成「子流域划分」'
   const n = (state.subbasins.subbasins || []).length
+  if (calibRunning.value) {
+    const st = state.calib.status || {}
+    return `率定进行中：${st.unit || '准备'} 单元 · 第 ${st.gen || 0} 代 · 已评估 ${st.evals || 0} 次`
+  }
+  const res = state.calib.result
+  if (res) {
+    const m = (res.metrics || []).map((x) => (x.calib || {}).nse).filter((v) => v != null)
+    const worst = m.length ? Math.min(...m) : null
+    return `最近一次率定：${(res.units || []).length} 个单元，率定期最差 NSE ${
+      worst == null ? '—' : worst.toFixed(3)
+    }（${res.finished_at ? res.finished_at.replace('T', ' ').slice(0, 16) : ''}）`
+  }
   const sim = state.simResult
   if (!sim) return `按 ${n} 个预报单元演算区间产流并沿河链演算至各站出口`
   const ok = (sim.units || []).filter((u) => (u.metrics || {}).nse >= 0.5).length
@@ -900,6 +919,18 @@ async function doRemoveDem() {
   border-radius: 50%;
   background: var(--primary);
   flex: 0 0 auto;
+}
+.mdl-dot.run {
+  animation: mdlPulse 1.2s ease-in-out infinite;
+}
+@keyframes mdlPulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.25;
+  }
 }
 .sub-sec {
   font-size: 12px;

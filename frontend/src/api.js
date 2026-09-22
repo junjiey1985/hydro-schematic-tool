@@ -109,5 +109,16 @@ export const api = {
   calibrationApply: (pid, payload = {}) =>
     request(`/api/projects/${pid}/calibration/apply`, { method: 'POST', body: payload }),
   calibrationSimulate: (pid, payload = {}) =>
-    request(`/api/projects/${pid}/calibration/simulate`, { method: 'POST', body: payload })
+    request(`/api/projects/${pid}/calibration/simulate`, { method: 'POST', body: payload }),
+
+  // ---------------- 率定任务（P3）
+  calibrationRun: (pid, payload = {}) =>
+    request(`/api/projects/${pid}/calibration/run`, { method: 'POST', body: payload }),
+  calibrationRuns: (pid) => request(`/api/projects/${pid}/calibration/runs`),
+  calibrationStatus: (pid, rid) => request(`/api/projects/${pid}/calibration/runs/${rid}/status`),
+  calibrationStop: (pid, rid) =>
+    request(`/api/projects/${pid}/calibration/runs/${rid}/stop`, { method: 'POST' }),
+  calibrationResult: (pid, rid) => request(`/api/projects/${pid}/calibration/runs/${rid}/result`),
+  calibrationConvergence: (pid, rid) =>
+    request(`/api/projects/${pid}/calibration/runs/${rid}/convergence`)
 }
