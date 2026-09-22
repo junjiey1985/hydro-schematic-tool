@@ -124,5 +124,9 @@ export const api = {
 
   // ---------------- 情景预报（P6）
   calibrationForecast: (pid, payload = {}) =>
-    request(`/api/projects/${pid}/calibration/forecast`, { method: 'POST', body: payload })
+    request(`/api/projects/${pid}/calibration/forecast`, { method: 'POST', body: payload }),
+
+  // ---------------- GLUE 不确定性（P7）
+  calibrationGlue: (pid, payload = {}) =>
+    request(`/api/projects/${pid}/calibration/glue`, { method: 'POST', body: payload })
 }

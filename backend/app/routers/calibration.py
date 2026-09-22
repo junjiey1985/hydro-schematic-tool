@@ -16,6 +16,7 @@ from fastapi import APIRouter, HTTPException, Response
 
 from .. import storage as st
 from ..core.model.calibrate import run_calibration
+from ..core.model.glue import run_glue as glue_run
 from ..core.model.params import FIXED_SPEC, PARAM_KEYS, PARAM_SPEC, default_params
 from ..core.model.simulate import simulate_basin
 from ..core.timeseries import summarize
@@ -263,6 +264,31 @@ def run_forecast(pid: str, payload: dict | None = None):
 
     res["rain_scenario"] = {"desc": rain_desc, "values": rain_mm, "horizon_days": horizon}
     res["warnings"] = [*(res.get("warnings") or []), f"预报情景：{rain_desc}（非实测、非实时接入）"]
+    return res
+
+
+@router.post("/{pid}/calibration/glue")
+def run_glue_api(pid: str, payload: dict | None = None):
+    """GLUE 参数不确定性分析（同步执行，≈ n_samples × 15 ms）。
+
+    body: {n_samples: 1000, threshold: 0.7, seed: 0, split: 0.7,
+           lock: {code:{参数:值}}, period: {start,end,warmup_days}}
+    返回各站 5%/50%/95% 分位带 + 行为样本统计 + 行为参数后验范围。
+    """
+    get_project_or_404(pid)
+    sub = _require_subbasins(pid)
+    payload = payload or {}
+    cfg = {
+        "n_samples": payload.get("n_samples") or 1000,
+        "threshold": payload.get("threshold") or 0.7,
+        "seed": int(payload.get("seed") or 0),
+        "split": payload.get("split") or 0.7,
+        "lock": payload.get("lock") or {},
+        "period": payload.get("period") or None,
+    }
+    res = glue_run(sub, st.read_ts_manifest(pid), series_loader(pid), config=cfg)
+    if not res.get("ok"):
+        raise HTTPException(400, res.get("error") or "GLUE 分析失败")
     return res
 
 

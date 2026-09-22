@@ -264,6 +264,90 @@
           出流 q 为单元出口断面（含上游来流演算结果）。
         </div>
 
+        <!-- 参数不确定性（GLUE）P7 -->
+        <template v-if="mode === 'calib'">
+          <div class="sub-sec">
+            参数不确定性（GLUE）
+            <span class="muted">参数区间均匀采样 → 全链演算 → NSE² 加权 90% 置信带（Beven &amp; Binley, 1992）</span>
+            <span class="grow"></span>
+            <label class="glue-lb">采样数 <input id="glue-n" v-model.number="glueForm.n_samples" type="number" min="50" max="5000" step="50" class="num-in" /></label>
+            <label class="glue-lb">阈值 NSE ≥ <input id="glue-th" v-model.number="glueForm.threshold" type="number" min="0" max="1" step="0.05" class="num-in" /></label>
+            <button id="glue-run" class="btn primary sm" :disabled="glueRunning || !!state.busy" @click="runGlue">
+              {{ glueRunning ? '分析中…' : '运行 GLUE 分析' }}
+            </button>
+          </div>
+          <div v-if="!glueResult && !glueRunning" class="empty-line small">
+            还没有 GLUE 分析结果。设置采样数（建议 ≥500）与行为阈值后点「运行 GLUE 分析」。
+          </div>
+          <template v-if="glueResult">
+            <div class="units">
+              <button
+                v-for="s in glueResult.stations"
+                :key="s.code"
+                class="ubtn"
+                :class="{ on: s.code === glueCode }"
+                @click="glueCode = s.code"
+              >
+                <span class="dot" :style="{ background: colorOf(s.code) }"></span>
+                {{ s.code }}
+                <b>行为 {{ s.behavioral_count }}</b>
+              </button>
+              <span class="muted small">
+                采样 {{ glueResult.n_samples }} · 阈值 {{ glueResult.threshold }} · 用时 {{ glueResult.elapsed_s }} s
+              </span>
+            </div>
+            <div v-if="glueCur" class="chart-box">
+              <div class="chart-head">
+                <b>{{ glueCur.code }} {{ glueCur.name }}</b>
+                <span class="muted">
+                  NSE 最优 {{ fmt(glueCur.nse_best, 3) }} · 行为中位 {{ fmt(glueCur.nse_median_beh, 3) }}
+                  <template v-if="glueCur.cover_90 != null"> · 90% 区间覆盖率 {{ fmt(glueCur.cover_90 * 100, 0) }}%</template>
+                  <template v-if="glueCur.fallback"> · <span class="warn-t">无样本达阈值，已回退 NSE 前 10%</span></template>
+                </span>
+              </div>
+              <EChart :option="glueOpt" :height="252" />
+            </div>
+            <div class="note">
+              阴影带为 90% 置信区间（NSE² 加权 5%~95% 分位）；蓝线为 50% 分位（中心趋势），
+              红线为 NSE 最优样本过程线，黑点为实测。
+            </div>
+
+            <div class="sub-sec">
+              行为参数后验范围
+              <span class="muted">NSE ≥ {{ glueResult.threshold }} 样本的参数取值范围（括号内为率定区间）；范围越窄，参数可辨识性越好</span>
+            </div>
+            <div class="tbl-wrap glue-wrap">
+              <table class="tbl">
+                <thead>
+                  <tr>
+                    <th style="width: 62px">单元</th>
+                    <th style="width: 72px">参数</th>
+                    <th class="num">后验 min</th>
+                    <th class="num">后验 max</th>
+                    <th class="num" style="width: 90px">占区间宽</th>
+                    <th class="num">率定区间</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="r in glueResult.param_ranges" :key="r.code + r.key">
+                    <td>
+                      <span class="dot" :style="{ background: colorOf(r.code) }"></span>{{ r.code }}
+                    </td>
+                    <td class="small mono">{{ r.key }}</td>
+                    <td class="num">{{ fmt(r.min, 3) }}</td>
+                    <td class="num">{{ fmt(r.max, 3) }}</td>
+                    <td class="num" :class="bandClass(r)">{{ bandPct(r) }}%</td>
+                    <td class="num muted">({{ fmt(r.range_lo, 2) }} ~ {{ fmt(r.range_hi, 2) }})</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <div v-if="(glueResult.warnings || []).length" class="warn-box">
+              <div v-for="(w, i) in glueResult.warnings" :key="i">· {{ w }}</div>
+            </div>
+          </template>
+        </template>
+
         <div v-if="(doc.warnings || []).length" class="warn-box">
           <div v-for="(w, i) in doc.warnings" :key="i">· {{ w }}</div>
         </div>
@@ -273,8 +357,9 @@
 </template>
 
 <script setup>
-import { computed, ref, watch } from 'vue'
+import { computed, reactive, ref, watch } from 'vue'
 import EChart from './EChart.vue'
+import { api } from '../../api'
 import { flowOption } from '../../charts'
 import { adoptCalibrationResult, state, subbasinColorOf, toast } from '../../store'
 
@@ -430,6 +515,100 @@ function exportUrl(what) {
   const pid = state.project && state.project.id
   const rid = (calib.value && calib.value.run_id) || ''
   return `/api/projects/${pid}/calibration/export?what=${what}&rid=${rid}`
+}
+
+// ---------------- GLUE 参数不确定性（P7）
+const glueForm = reactive({ n_samples: 500, threshold: 0.7 })
+const glueRunning = ref(false)
+const glueResult = ref(null)
+const glueCode = ref('')
+
+const glueCur = computed(
+  () => ((glueResult.value && glueResult.value.stations) || []).find((s) => s.code === glueCode.value) || null
+)
+
+async function runGlue() {
+  if (glueRunning.value) return
+  glueRunning.value = true
+  try {
+    const res = await api.calibrationGlue(state.project.id, {
+      n_samples: glueForm.n_samples || 500,
+      threshold: glueForm.threshold || 0.7,
+      seed: 7
+    })
+    glueResult.value = res
+    glueCode.value = ((res.stations || [])[0] || {}).code || ''
+    toast(`GLUE 分析完成：${res.n_samples} 样本 / ${res.elapsed_s}s`)
+  } catch (e) {
+    toast((e && e.message) || 'GLUE 分析失败', 'err')
+  } finally {
+    glueRunning.value = false
+  }
+}
+
+// 置信带图：q05 与 (q95-q05) 同 stack，后者带 areaStyle 形成面积带
+const glueOpt = computed(() => {
+  const s = (glueCur.value && glueCur.value.series) || {}
+  const t = s.time || []
+  const lo = s.q05 || []
+  const hi = s.q95 || []
+  const band = lo.map((v, i) => (v == null || hi[i] == null ? null : +(hi[i] - v).toFixed(3)))
+  const mkLine = (name, data, extra = {}) => ({
+    name,
+    type: 'line',
+    data,
+    symbol: 'none',
+    connectNulls: true,
+    ...extra
+  })
+  return {
+    animation: false,
+    grid: { left: 54, right: 12, top: 26, bottom: 24 },
+    legend: { top: 0, itemWidth: 14, itemHeight: 8, textStyle: { fontSize: 10, color: '#666' } },
+    tooltip: {
+      trigger: 'axis',
+      textStyle: { fontSize: 11 },
+      valueFormatter: (v) => (v == null ? '—' : Number(v).toFixed(2))
+    },
+    xAxis: {
+      type: 'category',
+      data: t,
+      axisLabel: { fontSize: 10, color: '#888', formatter: (v) => v.slice(5, 10) }
+    },
+    yAxis: {
+      type: 'value',
+      name: 'm³/s',
+      nameTextStyle: { fontSize: 10, color: '#888' },
+      axisLabel: { fontSize: 10, color: '#888' },
+      splitLine: { lineStyle: { color: '#eee' } }
+    },
+    series: [
+      mkLine('q05', lo, { stack: 'band', lineStyle: { opacity: 0 }, areaStyle: { opacity: 0 }, silent: true, itemStyle: { color: 'transparent' } }),
+      mkLine('90% 置信带', band, {
+        stack: 'band',
+        lineStyle: { opacity: 0 },
+        areaStyle: { color: 'rgba(47,115,218,0.18)' },
+        itemStyle: { color: 'transparent' },
+        silent: true
+      }),
+      mkLine('q50 中位', s.q50 || [], { lineStyle: { width: 1.4, color: '#2f73da' }, itemStyle: { color: '#2f73da' } }),
+      mkLine('NSE 最优', s.sim_best || [], { lineStyle: { width: 1.2, color: '#d64a2f' }, itemStyle: { color: '#d64a2f' } }),
+      mkLine('实测', s.obs || [], {
+        type: 'scatter',
+        symbolSize: 3,
+        itemStyle: { color: '#333' }
+      })
+    ]
+  }
+})
+
+function bandPct(r) {
+  const span = (r.range_hi - r.range_lo) || 1
+  return Math.min(100, Math.round(((r.max - r.min) / span) * 100))
+}
+function bandClass(r) {
+  const p = bandPct(r)
+  return p < 40 ? 'ok-t' : p < 70 ? 'warn-t' : 'muted'
 }
 
 function colorOf(code) {
@@ -647,5 +826,23 @@ function fmt(v, n = 2) {
 }
 .mono {
   font-family: ui-monospace, monospace;
+}
+.glue-lb {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  color: var(--text-2);
+}
+.num-in {
+  width: 62px;
+  padding: 3px 6px;
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+.glue-wrap {
+  max-height: 260px;
 }
 </style>
