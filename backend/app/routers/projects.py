@@ -31,7 +31,22 @@ def get_project(pid: str):
     meta = get_project_or_404(pid)
     meta["has_topology"] = st.read_topology(pid) is not None
     meta["has_schematic"] = st.read_schematic(pid) is not None
+    meta["has_dem"] = bool(meta.get("dem"))
     return meta
+
+
+@router.patch("/{pid}")
+def update_project(pid: str, payload: dict):
+    """重命名 / 修改项目说明。body `{name?, description?}`，仅更新提供的字段。"""
+    get_project_or_404(pid)
+    try:
+        return st.update_project(
+            pid,
+            name=payload.get("name") if "name" in payload else None,
+            description=payload.get("description") if "description" in payload else None,
+        )
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"项目不存在: {pid}")
 
 
 @router.delete("/{pid}")

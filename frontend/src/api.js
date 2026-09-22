@@ -28,6 +28,7 @@ export const api = {
   listProjects: () => request('/api/projects'),
   createProject: (name, description) => request('/api/projects', { method: 'POST', body: { name, description } }),
   getProject: (pid) => request(`/api/projects/${pid}`),
+  updateProject: (pid, payload) => request(`/api/projects/${pid}`, { method: 'PATCH', body: payload }),
   deleteProject: (pid) => request(`/api/projects/${pid}`, { method: 'DELETE' }),
   samplesAvailable: () => request('/api/projects/samples/available'),
   importSamples: (payload = {}) => request('/api/projects/samples/import', { method: 'POST', body: payload }),

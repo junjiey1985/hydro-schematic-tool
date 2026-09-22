@@ -29,8 +29,12 @@ else
   echo "PASS  已移除「导入示例流域」按钮"; PASS=$((PASS+1))
 fi
 chk "项目卡片（堵河）" "堵河" debug_shots/snap8_1.txt
-chk "拓扑标记" "拓扑 ✓" debug_shots/snap8_1.txt
+chk "拓扑标记" "拓扑" debug_shots/snap8_1.txt
 chk "图层计数" "个图层" debug_shots/snap8_1.txt
+chk "工作流徽标（时序）" "时序" debug_shots/snap8_1.txt
+chk "工作流徽标（率定）" "率定" debug_shots/snap8_1.txt
+chk "重命名按钮（✎）" 'button "✎"' debug_shots/snap8_1.txt
+chk "搜索框" "按名称 / 说明筛选项目" debug_shots/snap8_1.txt
 chk "新建卡片" "导入 SHP / DEM 数据" debug_shots/snap8_1.txt
 shot p8_01_home
 
@@ -88,9 +92,25 @@ sleep 8
 agent-browser snapshot > debug_shots/snap8_6.txt 2>&1
 chk "创建后进入工作台" "地图视图" debug_shots/snap8_6.txt
 chk "新项目已选中" "_p8_自动测试项目" debug_shots/snap8_6.txt
-agent-browser eval "(function(){return document.querySelector('.proj-sel') ? document.querySelector('.proj-sel').value : 'no-sel'})()" > debug_shots/eval8.txt 2>&1
+
+echo
+echo "############ [6b] 卡片重命名（PATCH 接口 + 列表刷新）→ 顺带清理测试项目 ############"
+# 回开始页（品牌点击），对刚创建的测试项目卡片执行改名（不碰真实项目）
+ab eval "(function(){var b=document.querySelector('.brand'); if(b) b.click(); return 'home'})()"
+sleep 2
+ab eval "(function(){var c=[...document.querySelectorAll('.card')].find(function(x){return x.textContent.indexOf('_p8_自动测试项目')>=0 && x.className.indexOf('new')<0}); if(!c) return 'no-card'; var btn=[].slice.call(c.querySelectorAll('.card-del')).find(function(b){return b.title==='重命名'}); if(!btn) return 'no-rename-btn'; btn.click(); return 'edit-mode'})()"
+sleep 1
+ab eval "(function(){var card=[...document.querySelectorAll('.card')].find(function(x){return x.querySelector('.edit-form')}); if(!card) return 'no-edit'; var inp=card.querySelector('input[type=text]'); inp.value='_p8_自动测试项目_改名'; inp.dispatchEvent(new Event('input',{bubbles:true})); return 'filled'})()"
+sleep 1
+ab eval "(function(){var card=[...document.querySelectorAll('.card')].find(function(x){return x.querySelector('.edit-form')}); var b=[...card.querySelectorAll('button')].find(function(x){return x.textContent.trim()==='保存'}); if(!b) return 'no-save'; b.click(); return 'saved'})()"
+sleep 3
+agent-browser snapshot > debug_shots/snap8_5c.txt 2>&1
+chk "改名后列表刷新（_改名）" "_改名" debug_shots/snap8_5c.txt
+
+# 清理：按名称查 id 后 API 删除
+agent-browser eval "(function(){var x=new XMLHttpRequest(); x.open('GET','/api/projects',false); x.send(); var t=JSON.parse(x.responseText).projects.find(function(p){return p.name.indexOf('_p8_自动测试项目')>=0}); return t ? t.id : 'no-target'})()" > debug_shots/eval8.txt 2>&1
 PID=$(tr -d '"\r\n' < debug_shots/eval8.txt | tail -1)
-echo "  新项目 id = $PID"
+echo "  测试项目 id = $PID"
 if [ -n "$PID" ] && [ "${PID:0:2}" = "p_" ]; then
   code=$(curl -s -o /dev/null -w "%{http_code}" -X DELETE "http://127.0.0.1:8013/api/projects/$PID")
   echo "  清理删除 HTTP $code"

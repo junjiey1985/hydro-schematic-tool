@@ -51,6 +51,23 @@ def project_dir(pid: str) -> Path:
     return PROJECTS_DIR / pid
 
 
+def _dir_nonempty(d: Path) -> bool:
+    try:
+        return d.exists() and any(d.iterdir())
+    except OSError:
+        return False
+
+
+def _has_timeseries(d: Path) -> bool:
+    ts = d / "timeseries"
+    if (ts / "manifest.json").exists():
+        return True
+    try:
+        return any(f.suffix.lower() == ".csv" for f in ts.rglob("*.csv"))
+    except OSError:
+        return False
+
+
 def list_projects() -> list[dict]:
     out = []
     for d in sorted(PROJECTS_DIR.iterdir()) if PROJECTS_DIR.exists() else []:
@@ -60,15 +77,34 @@ def list_projects() -> list[dict]:
                 {
                     "id": meta["id"],
                     "name": meta["name"],
+                    "description": meta.get("description") or "",
                     "created_at": meta.get("created_at"),
                     "updated_at": meta.get("updated_at"),
                     "layer_count": len(meta.get("layers", [])),
                     "has_topology": (d / "topology.json").exists(),
                     "has_schematic": (d / "schematic.json").exists(),
+                    "has_subbasins": (d / "subbasins.json").exists(),
+                    "has_dem": _dir_nonempty(d / "dem"),
+                    "has_timeseries": _has_timeseries(d),
+                    "has_calib": _dir_nonempty(d / "calibration" / "runs"),
                 }
             )
     out.sort(key=lambda x: x.get("updated_at") or "", reverse=True)
     return out
+
+
+def update_project(pid: str, name: str | None = None, description: str | None = None) -> dict:
+    """重命名 / 修改项目说明（仅更新提供的字段）。"""
+    meta = get_project(pid)
+    if not meta:
+        raise KeyError(pid)
+    if name is not None:
+        name = (name or "").strip()
+        if name:
+            meta["name"] = name
+    if description is not None:
+        meta["description"] = (description or "").strip()
+    return save_project(meta)
 
 
 def create_project(name: str, description: str = "") -> dict:

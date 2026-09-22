@@ -11,6 +11,12 @@
           </div>
         </div>
         <div class="home-actions">
+          <input
+            v-model="filter"
+            class="home-search"
+            type="text"
+            placeholder="按名称 / 说明筛选项目…"
+          />
           <button class="btn primary" @click="$emit('create', 'blank')">＋ 新建项目</button>
         </div>
       </div>
@@ -20,37 +26,62 @@
 
       <div v-else class="cards">
         <div
-          v-for="p in projects"
+          v-for="p in filtered"
           :key="p.id"
           class="card"
-          @click="$emit('open', p.id)"
+          @click="editId !== p.id && $emit('open', p.id)"
         >
-          <div class="card-top">
-            <div class="card-name" :title="p.name">{{ p.name }}</div>
-            <button
-              v-if="confirmDel !== p.id"
-              class="card-del"
-              title="删除项目"
-              @click.stop="confirmDel = p.id; delTimer = setTimeout(() => (confirmDel = ''), 3000)"
-            >✕</button>
-            <template v-else>
-              <button class="card-del sure" title="再次点击确认删除" @click.stop="doDelete(p.id)">确认删除</button>
-            </template>
-          </div>
+          <!-- 编辑态：重命名 -->
+          <template v-if="editId === p.id">
+            <div class="edit-form" @click.stop>
+              <div class="field"><label>项目名称</label>
+                <input ref="renameInput" v-model="editName" type="text" @keyup.enter="saveRename(p.id)" />
+              </div>
+              <div class="field"><label>说明（可选）</label>
+                <textarea v-model="editDesc" rows="2"></textarea>
+              </div>
+              <div class="edit-btns">
+                <button class="btn sm" @click="editId = ''">取消</button>
+                <button class="btn sm primary" @click="saveRename(p.id)">保存</button>
+              </div>
+            </div>
+          </template>
 
-          <div class="card-tags">
-            <span class="tag ok">拓扑 ✓</span>
-            <span v-if="p.has_schematic" class="tag ok">概化图 ✓</span>
-            <span v-else class="tag">概化图未生成</span>
-            <span class="tag">{{ p.layer_count }} 个图层</span>
-          </div>
+          <!-- 展示态 -->
+          <template v-else>
+            <div class="card-top">
+              <div class="card-name" :title="p.name">{{ p.name }}</div>
+              <button class="card-del" title="重命名" @click.stop="startRename(p)">✎</button>
+              <button
+                v-if="confirmDel !== p.id"
+                class="card-del"
+                title="删除项目"
+                @click.stop="confirmDel = p.id; delTimer = setTimeout(() => (confirmDel = ''), 3000)"
+              >✕</button>
+              <template v-else>
+                <button class="card-del sure" title="再次点击确认删除" @click.stop="doDelete(p.id)">确认删除</button>
+              </template>
+            </div>
 
-          <div class="card-meta">
-            <span>创建于 {{ fmtDate(p.created_at) }}</span>
-            <span>更新于 {{ fmtDate(p.updated_at) }}</span>
-          </div>
+            <div v-if="p.description" class="card-desc" :title="p.description">{{ p.description }}</div>
 
-          <div class="card-open">进入工作台 →</div>
+            <div class="card-tags">
+              <span class="wf" :class="{ on: p.has_dem }" title="DEM 与河网">DEM</span>
+              <span class="wf" :class="{ on: p.has_topology }" title="拓扑关系">拓扑</span>
+              <span class="wf" :class="{ on: p.has_schematic }" title="水系概化图">概化图</span>
+              <span class="wf" :class="{ on: p.has_subbasins }" title="预报单元">单元</span>
+              <span class="wf" :class="{ on: p.has_timeseries }" title="时序数据">时序</span>
+              <span class="wf" :class="{ on: p.has_calib }" title="率定结果">率定</span>
+              <span class="tag">{{ p.layer_count }} 个图层</span>
+            </div>
+
+            <div class="card-meta">
+              <span>创建于 {{ fmtDate(p.created_at) }}</span>
+              <span>更新于 {{ fmtDate(p.updated_at) }}</span>
+            </div>
+
+            <div class="card-open">进入工作台 →</div>
+          </template>
         </div>
 
         <!-- 新建卡片 -->
@@ -61,8 +92,8 @@
         </div>
       </div>
 
-      <div v-if="ready && !projects.length" class="home-empty">
-        还没有项目——点「＋ 新建项目」后选择 <b>示例项目</b>，一键体验 DEM 生成河网 → 拓扑 → 概化图 → 率定全流程。
+      <div v-if="ready && !filtered.length" class="home-empty">
+        {{ projects.length ? '没有匹配的项目——试试清空筛选条件。' : '还没有项目——点「＋ 新建项目」后选择 示例项目，一键体验 DEM 生成河网 → 拓扑 → 概化图 → 率定全流程。' }}
       </div>
     </div>
 
@@ -76,7 +107,8 @@
 
 <script setup>
 import { onMounted, onBeforeUnmount, ref, computed } from 'vue'
-import { state, loadProjects, removeProjectFromHome } from '../store'
+import { state, loadProjects, removeProjectFromHome, toast } from '../store'
+import { api } from '../api'
 
 defineEmits(['open', 'create'])
 
@@ -84,8 +116,51 @@ const ready = computed(() => state.ready)
 const projects = computed(() => state.projects)
 const busy = computed(() => state.busy)
 
+const filter = ref('')
+const filtered = computed(() => {
+  const q = filter.value.trim().toLowerCase()
+  if (!q) return projects.value
+  return projects.value.filter(
+    (p) =>
+      (p.name || '').toLowerCase().includes(q) ||
+      (p.description || '').toLowerCase().includes(q)
+  )
+})
+
 const confirmDel = ref('')
 let delTimer = null
+
+// 重命名
+const editId = ref('')
+const editName = ref('')
+const editDesc = ref('')
+const renameInput = ref(null)
+
+function startRename(p) {
+  editId.value = p.id
+  editName.value = p.name || ''
+  editDesc.value = p.description || ''
+  requestAnimationFrame(() => {
+    const el = Array.isArray(renameInput.value) ? renameInput.value[0] : renameInput.value
+    if (el) el.focus()
+  })
+}
+
+async function saveRename(pid) {
+  const name = editName.value.trim()
+  if (!name) {
+    toast('项目名称不能为空', 'err')
+    return
+  }
+  try {
+    await api.updateProject(pid, { name, description: editDesc.value })
+    await loadProjects()
+    editId.value = ''
+    toast('已保存', 'ok')
+  } catch (e) {
+    toast(e.message || '保存失败', 'err', 5200)
+  }
+}
 
 onMounted(() => {
   // 回到开始页时刷新一次列表（含其他会话的改动）
@@ -166,11 +241,20 @@ function fmtDate(s) {
 .home-actions {
   display: flex;
   gap: 10px;
+  align-items: center;
 }
-.btn.ghost {
-  background: #fff;
+.home-search {
+  width: 220px;
+  padding: 7px 12px;
   border: 1px solid #d7dfe7;
+  border-radius: 8px;
+  font-size: 13px;
   color: #35505f;
+  background: #fff;
+  outline: none;
+}
+.home-search:focus {
+  border-color: #1e6fa8;
 }
 
 /* ---- 卡片网格 ---- */
@@ -217,19 +301,47 @@ function fmtDate(s) {
   border-radius: 6px;
 }
 .card-del:hover {
-  color: #c0392b;
-  background: #fbeeea;
+  color: #1e6fa8;
+  background: #eaf2f8;
 }
 .card-del.sure {
   color: #fff;
   background: #c0392b;
   font-weight: 600;
 }
+.card-del.sure:hover {
+  color: #fff;
+  background: #a93226;
+}
+.card-desc {
+  margin-top: 8px;
+  font-size: 12px;
+  color: #7b8a97;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .card-tags {
   display: flex;
-  gap: 6px;
+  gap: 5px;
   flex-wrap: wrap;
+  align-items: center;
   margin-top: 12px;
+}
+.wf {
+  font-size: 11px;
+  line-height: 1;
+  padding: 4px 7px;
+  border-radius: 5px;
+  background: #f0f3f6;
+  color: #a7b4bf;
+  border: 1px solid transparent;
+}
+.wf.on {
+  background: #e8f4ee;
+  color: #2e8b74;
+  border-color: #bfe0d2;
+  font-weight: 600;
 }
 .card-meta {
   display: flex;
@@ -249,6 +361,40 @@ function fmtDate(s) {
 }
 .card:hover .card-open {
   opacity: 1;
+}
+
+/* 编辑态 */
+.edit-form {
+  cursor: default;
+}
+.edit-form .field {
+  margin-bottom: 10px;
+}
+.edit-form label {
+  display: block;
+  font-size: 12px;
+  color: #7b8a97;
+  margin-bottom: 4px;
+}
+.edit-form input,
+.edit-form textarea {
+  width: 100%;
+  padding: 7px 10px;
+  border: 1px solid #d7dfe7;
+  border-radius: 8px;
+  font-size: 13px;
+  color: #1c2b36;
+  outline: none;
+  box-sizing: border-box;
+}
+.edit-form input:focus,
+.edit-form textarea:focus {
+  border-color: #1e6fa8;
+}
+.edit-btns {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
 }
 
 /* 新建卡片 */
