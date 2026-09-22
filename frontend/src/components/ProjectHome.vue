@@ -17,6 +17,8 @@
             type="text"
             placeholder="按名称 / 说明筛选项目…"
           />
+          <button class="btn" @click="pickImport">导入项目 zip</button>
+          <input ref="importFile" type="file" accept=".zip" style="display: none" @change="doImport" />
           <button class="btn primary" @click="$emit('create', 'blank')">＋ 新建项目</button>
         </div>
       </div>
@@ -51,6 +53,13 @@
           <template v-else>
             <div class="card-top">
               <div class="card-name" :title="p.name">{{ p.name }}</div>
+              <a
+                class="card-del"
+                :href="`/api/projects/${p.id}/export`"
+                :download="`${p.name}.zip`"
+                title="导出项目 zip（备份 / 迁移）"
+                @click.stop
+              >⤓</a>
               <button class="card-del" title="重命名" @click.stop="startRename(p)">✎</button>
               <button
                 v-if="confirmDel !== p.id"
@@ -129,6 +138,31 @@ const filtered = computed(() => {
 
 const confirmDel = ref('')
 let delTimer = null
+
+// 导入项目 zip
+const importFile = ref(null)
+
+function pickImport() {
+  if (importFile.value) importFile.value.click()
+}
+
+async function doImport(e) {
+  const file = (e.target.files || [])[0]
+  if (fileInputReset(e.target)) return
+  try {
+    const meta = await api.importProject(file)
+    await loadProjects()
+    toast(`已导入为「${meta.name}」`, 'ok')
+  } catch (err) {
+    toast(err.message || '导入失败', 'err', 5200)
+  }
+}
+
+function fileInputReset(input) {
+  const empty = !input.files || !input.files.length
+  input.value = ''
+  return empty
+}
 
 // 重命名
 const editId = ref('')
@@ -299,6 +333,7 @@ function fmtDate(s) {
   font-size: 12px;
   padding: 2px 6px;
   border-radius: 6px;
+  text-decoration: none;
 }
 .card-del:hover {
   color: #1e6fa8;

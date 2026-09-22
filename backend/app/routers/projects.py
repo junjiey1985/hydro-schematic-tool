@@ -1,11 +1,16 @@
 """项目相关接口。"""
 from __future__ import annotations
 
+import io
 import json
+import re
 import shutil
+import zipfile
+from datetime import datetime
 from pathlib import Path
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
+from fastapi.responses import Response
 
 from .. import storage as st
 from ..config import SAMPLES_DIR
@@ -13,6 +18,9 @@ from ..core.shp_io import list_shapefiles, read_shapefile
 from .deps import guess_layer_type, get_project_or_404, normalize_features
 
 router = APIRouter(prefix="/api/projects", tags=["projects"])
+
+# 导出时跳过的大文件 / 缓存目录（按相对路径首段）
+_EXPORT_SKIP_DIRS = {"__pycache__"}
 
 
 @router.get("")
@@ -54,6 +62,86 @@ def delete_project(pid: str):
     get_project_or_404(pid)
     st.delete_project(pid)
     return {"ok": True}
+
+
+# ---------------------------------------------------------------- 导出 / 导入
+@router.get("/{pid}/export")
+def export_project(pid: str):
+    """把整个项目（元数据 + 图层 + 拓扑/概化图/单元 + DEM + 时序 + 率定）打包为 zip 下载。"""
+    meta = get_project_or_404(pid)
+    d = st.project_dir(pid)
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        for p in sorted(d.rglob("*")):
+            if not p.is_file():
+                continue
+            rel = p.relative_to(d)
+            if any(part in _EXPORT_SKIP_DIRS for part in rel.parts):
+                continue
+            z.write(p, rel.as_posix())
+    # ASCII 文件名兜底 + RFC 5987 中文文件名
+    safe = re.sub(r"[^A-Za-z0-9_-]+", "_", meta.get("name") or pid) or pid
+    fname = f"{safe}_{pid}.zip"
+    from urllib.parse import quote
+
+    return Response(
+        buf.getvalue(),
+        media_type="application/zip",
+        headers={
+            "Content-Disposition": f"attachment; filename=\"{fname}\"; filename*=UTF-8''{quote(meta.get('name') or pid)}.zip"
+        },
+    )
+
+
+@router.post("/import")
+async def import_project(
+    file: UploadFile = File(...),
+    name: str = Form(None),
+    description: str = Form(None),
+):
+    """导入项目 zip（须为本平台 `/export` 导出的包），创建为新项目。"""
+    data = await file.read()
+    try:
+        zf = zipfile.ZipFile(io.BytesIO(data))
+    except zipfile.BadZipFile:
+        raise HTTPException(400, "不是有效的 zip 文件")
+
+    names = zf.namelist()
+    if "project.json" not in names:
+        raise HTTPException(400, "zip 缺少 project.json——请使用本平台「导出项目」生成的 zip")
+
+    try:
+        src_meta = json.loads(zf.read("project.json").decode("utf-8"))
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(400, f"project.json 解析失败: {e}")
+
+    new_name = (name or "").strip() or f"{src_meta.get('name', '导入项目')}（导入）"
+    meta = st.create_project(new_name, (description or "").strip() or src_meta.get("description") or "")
+    new_pid = meta["id"]
+    d = st.project_dir(new_pid)
+
+    try:
+        zf.extractall(d)
+    except Exception as e:  # noqa: BLE001
+        st.delete_project(new_pid)
+        raise HTTPException(500, f"解压失败: {e}")
+
+    # 重写 project.json：换 id / 名称 / 时间戳（图层清单等其余字段原样保留）
+    src_meta["id"] = new_pid
+    src_meta["name"] = new_name
+    if description is not None and description.strip():
+        src_meta["description"] = description.strip()
+    src_meta["created_at"] = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+    src_meta["updated_at"] = src_meta["created_at"]
+    (d / "project.json").write_text(
+        json.dumps(src_meta, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    out = st.get_project(new_pid)
+    out["layer_count"] = len(out.get("layers", []))
+    out["has_topology"] = st.read_topology(new_pid) is not None
+    out["has_schematic"] = st.read_schematic(new_pid) is not None
+    out["has_dem"] = bool(out.get("dem"))
+    return out
 
 
 # ---------------------------------------------------------------- 样例数据

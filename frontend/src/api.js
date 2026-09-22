@@ -32,6 +32,12 @@ export const api = {
   deleteProject: (pid) => request(`/api/projects/${pid}`, { method: 'DELETE' }),
   samplesAvailable: () => request('/api/projects/samples/available'),
   importSamples: (payload = {}) => request('/api/projects/samples/import', { method: 'POST', body: payload }),
+  importProject: (file, name) => {
+    const f = new FormData()
+    f.append('file', file)
+    if (name) f.append('name', name)
+    return request('/api/projects/import', { method: 'POST', form: f })
+  },
 
   // ---------------- 图层
   listLayers: (pid) => request(`/api/projects/${pid}/layers`),

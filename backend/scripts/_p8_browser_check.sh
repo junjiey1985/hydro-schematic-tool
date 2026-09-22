@@ -35,6 +35,8 @@ chk "工作流徽标（时序）" "时序" debug_shots/snap8_1.txt
 chk "工作流徽标（率定）" "率定" debug_shots/snap8_1.txt
 chk "重命名按钮（✎）" 'button "✎"' debug_shots/snap8_1.txt
 chk "搜索框" "按名称 / 说明筛选项目" debug_shots/snap8_1.txt
+chk "导入项目按钮" 'button "导入项目 zip"' debug_shots/snap8_1.txt
+chk "卡片导出链接（⤓）" 'link "⤓"' debug_shots/snap8_1.txt
 chk "新建卡片" "导入 SHP / DEM 数据" debug_shots/snap8_1.txt
 shot p8_01_home
 
