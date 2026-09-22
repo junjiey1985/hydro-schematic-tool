@@ -55,6 +55,78 @@ agent-browser snapshot > debug_shots/snap8_4.txt 2>&1
 chk "再次进入工作台" "模型与率定" debug_shots/snap8_4.txt
 
 echo
+echo "############ [5] 开始页 → 新建项目弹窗（复用同一弹窗） ############"
+# 回开始页
+ab eval "(function(){var b=document.querySelector('.brand'); if(b) b.click(); return 'home'})()"
+sleep 2
+ab eval "(function(){var b=[...document.querySelectorAll('button')].find(function(x){return x.textContent.indexOf('＋ 新建项目')>=0}); if(!b) return 'no-btn'; b.click(); return 'clicked'})()"
+sleep 2
+agent-browser snapshot > debug_shots/snap8_5.txt 2>&1
+chk "弹窗已打开" "新建项目" debug_shots/snap8_5.txt
+chk "空白项目选项" "空白项目" debug_shots/snap8_5.txt
+chk "示例项目选项" "示例项目" debug_shots/snap8_5.txt
+chk "创建按钮" 'button "创建"' debug_shots/snap8_5.txt
+shot p8_05_new_modal
+
+# 切到示例项目模式
+ab eval "(function(){var m=[...document.querySelectorAll('.mode')].find(function(x){return x.textContent.indexOf('示例项目')>=0}); if(!m) return 'no-mode'; m.click(); return 'switched'})()"
+sleep 2
+agent-browser snapshot > debug_shots/snap8_5b.txt 2>&1
+chk "示例模式：导入说明" "导入后自动完成拓扑构建与概化图生成" debug_shots/snap8_5b.txt
+chk "示例模式：按钮文案切换" "创建并导入示例数据" debug_shots/snap8_5b.txt
+
+echo
+echo "############ [6] 弹窗内创建空白项目 → 进工作台 → 清理 ############"
+ab eval "(function(){var m=[...document.querySelectorAll('.mode')].find(function(x){return x.textContent.indexOf('空白项目')>=0}); m.click(); var i=document.querySelector('.modal input[type=text]'); i.value='_p8_自动测试项目'; i.dispatchEvent(new Event('input',{bubbles:true})); return 'filled'})()"
+sleep 1
+ab eval "(function(){var b=[...document.querySelectorAll('.modal .foot button')].find(function(x){return x.textContent.trim()==='创建'}); if(!b) return 'no-btn'; b.click(); return 'created'})()"
+sleep 8
+agent-browser snapshot > debug_shots/snap8_6.txt 2>&1
+chk "创建后进入工作台" "地图视图" debug_shots/snap8_6.txt
+chk "新项目已选中" "_p8_自动测试项目" debug_shots/snap8_6.txt
+agent-browser eval "(function(){return document.querySelector('.proj-sel') ? document.querySelector('.proj-sel').value : 'no-sel'})()" > debug_shots/eval8.txt 2>&1
+PID=$(tr -d '"\r\n' < debug_shots/eval8.txt | tail -1)
+echo "  新项目 id = $PID"
+if [ -n "$PID" ] && [ "${PID:0:2}" = "p_" ]; then
+  code=$(curl -s -o /dev/null -w "%{http_code}" -X DELETE "http://127.0.0.1:8013/api/projects/$PID")
+  echo "  清理删除 HTTP $code"
+  if [ "$code" = "200" ]; then echo "PASS  测试项目已删除（API）"; PASS=$((PASS+1)); else echo "FAIL  测试项目删除（HTTP $code）"; FAIL=$((FAIL+1)); fi
+else
+  echo "FAIL  未取到新项目 id（$PID）"; FAIL=$((FAIL+1))
+fi
+ab open "http://127.0.0.1:8013"
+ab wait --load load
+sleep 5
+agent-browser snapshot > debug_shots/snap8_7.txt 2>&1
+if grep -q "_p8_自动测试项目" debug_shots/snap8_7.txt; then
+  echo "FAIL  测试项目已从列表移除"; FAIL=$((FAIL+1))
+else
+  echo "PASS  测试项目已从列表移除"; PASS=$((PASS+1))
+fi
+
+echo
+echo "############ [7] 开始页 → 示例项目一键创建（真实导入）→ 清理 ############"
+ab eval "(function(){var b=[...document.querySelectorAll('button')].find(function(x){return x.textContent.indexOf('导入示例流域')>=0}); if(!b) return 'no-btn'; b.click(); return 'clicked'})()"
+sleep 2
+agent-browser snapshot > debug_shots/snap8_8.txt 2>&1
+chk "示例模式默认选中" "创建并导入示例数据" debug_shots/snap8_8.txt
+ab eval "(function(){var b=[...document.querySelectorAll('.modal .foot button')].find(function(x){return x.textContent.indexOf('创建并导入')>=0}); if(!b) return 'no-btn'; b.click(); return 'go'})()"
+echo "  已触发示例导入，等待完成…"
+sleep 75
+agent-browser snapshot > debug_shots/snap8_9.txt 2>&1
+chk "示例导入后进入工作台" "地图视图" debug_shots/snap8_9.txt
+chk "示例导入后拓扑已构建" "拓扑：" debug_shots/snap8_9.txt
+agent-browser eval "(function(){return document.querySelector('.proj-sel') ? document.querySelector('.proj-sel').value : 'no-sel'})()" > debug_shots/eval8b.txt 2>&1
+SPID=$(tr -d '"\r\n' < debug_shots/eval8b.txt | tail -1)
+echo "  示例项目 id = $SPID"
+if [ -n "$SPID" ] && [ "${SPID:0:2}" = "p_" ]; then
+  code=$(curl -s -o /dev/null -w "%{http_code}" -X DELETE "http://127.0.0.1:8013/api/projects/$SPID")
+  if [ "$code" = "200" ]; then echo "PASS  示例项目已删除（API）"; PASS=$((PASS+1)); else echo "FAIL  示例项目删除（HTTP $code）"; FAIL=$((FAIL+1)); fi
+else
+  echo "FAIL  未取到示例项目 id（$SPID）"; FAIL=$((FAIL+1))
+fi
+
+echo
 echo "########################################"
 echo "PASS=$PASS FAIL=$FAIL"
 agent-browser close > /dev/null 2>&1

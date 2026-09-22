@@ -118,68 +118,6 @@
       </div>
     </div>
 
-    <!-- ============ 新建项目 ============ -->
-    <div v-if="ui.newProject" class="mask" @click.self="ui.newProject = false">
-      <div class="modal">
-        <h3>新建项目</h3>
-        <div class="body">
-          <!-- 创建方式 -->
-          <div class="mode-row">
-            <div class="mode" :class="{ on: newMode === 'blank' }" @click="pickNewMode('blank')">
-              <div class="mode-t">空白项目</div>
-              <div class="mode-d">自己导入 SHP / DEM 数据</div>
-            </div>
-            <div
-              class="mode"
-              :class="{ on: newMode === 'sample', off: !samplesOk }"
-              @click="pickNewMode('sample')"
-            >
-              <div class="mode-t">示例项目<span v-if="samplesOk" class="tag ok mtag">推荐</span></div>
-              <div class="mode-d">预置真实流域数据，开箱即用</div>
-            </div>
-          </div>
-
-          <!-- 示例项目 -->
-          <template v-if="newMode === 'sample'">
-            <div v-if="samplesOk" class="hintbar">
-              <div class="hb-t">将导入：{{ samplesInfo.name }}</div>
-              <div>图层（{{ samplesInfo.layers.length }}）：{{ sampleLayerNames }}</div>
-              <div v-if="samplesInfo.dem">
-                DEM：{{ samplesInfo.dem.file }}（{{ samplesInfo.dem.ncols }} × {{ samplesInfo.dem.nrows }}，{{ fmtNum(samplesInfo.dem.cellsize, 5) }}°）
-              </div>
-              <div>导入后自动完成拓扑构建与概化图生成，打开即可查看效果。</div>
-            </div>
-            <div v-else class="hintbar warn-bar">
-              示例数据未生成。请在 backend 目录执行：
-              <code>python scripts/make_real_samples.py</code>
-            </div>
-            <div class="field">
-              <label>项目名称（可选）</label>
-              <input type="text" v-model="form.name" :placeholder="samplesInfo ? samplesInfo.name : '示例流域'" />
-              <div class="hint">留空则使用默认名称「{{ samplesInfo ? samplesInfo.name : '示例流域' }}」</div>
-            </div>
-          </template>
-
-          <!-- 空白项目 -->
-          <template v-else>
-            <div class="field">
-              <label>项目名称</label>
-              <input type="text" v-model="form.name" placeholder="例如：清江流域水系" />
-            </div>
-            <div class="field">
-              <label>说明（可选）</label>
-              <textarea v-model="form.description" rows="3"></textarea>
-            </div>
-          </template>
-        </div>
-        <div class="foot">
-          <button class="btn" @click="ui.newProject = false">取消</button>
-          <button class="btn primary" :disabled="!canCreate" @click="doCreateProject">
-            {{ newMode === 'sample' ? '创建并导入示例数据' : '创建' }}
-          </button>
-        </div>
-      </div>
-    </div>
 
     <!-- ============ 导入 SHP ============ -->
     <div v-if="ui.upload" class="mask" @click.self="ui.upload = false">
@@ -455,6 +393,69 @@
           <button class="btn" @click="ui.topoOptions = false">取消</button>
           <button class="btn primary" @click="doBuildTopology">开始构建</button>
         </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ 新建项目 ============ -->
+  <div v-if="ui.newProject" class="mask" @click.self="ui.newProject = false">
+    <div class="modal">
+      <h3>新建项目</h3>
+      <div class="body">
+        <!-- 创建方式 -->
+        <div class="mode-row">
+          <div class="mode" :class="{ on: newMode === 'blank' }" @click="pickNewMode('blank')">
+            <div class="mode-t">空白项目</div>
+            <div class="mode-d">自己导入 SHP / DEM 数据</div>
+          </div>
+          <div
+            class="mode"
+            :class="{ on: newMode === 'sample', off: !samplesOk }"
+            @click="pickNewMode('sample')"
+          >
+            <div class="mode-t">示例项目<span v-if="samplesOk" class="tag ok mtag">推荐</span></div>
+            <div class="mode-d">预置真实流域数据，开箱即用</div>
+          </div>
+        </div>
+
+        <!-- 示例项目 -->
+        <template v-if="newMode === 'sample'">
+          <div v-if="samplesOk" class="hintbar">
+            <div class="hb-t">将导入：{{ samplesInfo.name }}</div>
+            <div>图层（{{ samplesInfo.layers.length }}）：{{ sampleLayerNames }}</div>
+            <div v-if="samplesInfo.dem">
+              DEM：{{ samplesInfo.dem.file }}（{{ samplesInfo.dem.ncols }} × {{ samplesInfo.dem.nrows }}，{{ fmtNum(samplesInfo.dem.cellsize, 5) }}°）
+            </div>
+            <div>导入后自动完成拓扑构建与概化图生成，打开即可查看效果。</div>
+          </div>
+          <div v-else class="hintbar warn-bar">
+            示例数据未生成。请在 backend 目录执行：
+            <code>python scripts/make_real_samples.py</code>
+          </div>
+          <div class="field">
+            <label>项目名称（可选）</label>
+            <input type="text" v-model="form.name" :placeholder="samplesInfo ? samplesInfo.name : '示例流域'" />
+            <div class="hint">留空则使用默认名称「{{ samplesInfo ? samplesInfo.name : '示例流域' }}」</div>
+          </div>
+        </template>
+
+        <!-- 空白项目 -->
+        <template v-else>
+          <div class="field">
+            <label>项目名称</label>
+            <input type="text" v-model="form.name" placeholder="例如：清江流域水系" />
+          </div>
+          <div class="field">
+            <label>说明（可选）</label>
+            <textarea v-model="form.description" rows="3"></textarea>
+          </div>
+        </template>
+      </div>
+      <div class="foot">
+        <button class="btn" @click="ui.newProject = false">取消</button>
+        <button class="btn primary" :disabled="!canCreate" @click="doCreateProject">
+          {{ newMode === 'sample' ? '创建并导入示例数据' : '创建' }}
+        </button>
       </div>
     </div>
   </div>
