@@ -37,10 +37,20 @@ const Y_AXIS = {
   axisLabel: { color: C_T3, fontSize: 10 }
 }
 
-/** 实测 vs 模拟过程线；splitIndex 之后为验证期（浅底色标出）。 */
-export function flowOption({ times = [], obs = [], sim = [], splitIndex = null, yName = 'm³/s' } = {}) {
+/** 实测 vs 模拟过程线；splitIndex 之后为验证期（浅底色标出）。
+ *  传入 rain（与 times 等长的逐时段面雨量 mm）时，右轴倒挂降雨柱垫底，便于判读降雨-流量对应。 */
+export function flowOption({
+  times = [],
+  obs = [],
+  sim = [],
+  rain = [],
+  splitIndex = null,
+  yName = 'm³/s',
+  rainLabel = 'mm'
+} = {}) {
   const n = times.length
-  const series = [
+  const hasRain = Array.isArray(rain) && rain.length === n && rain.some((v) => Number(v) > 0)
+  const lines = [
     {
       name: '实测',
       type: 'line',
@@ -65,7 +75,7 @@ export function flowOption({ times = [], obs = [], sim = [], splitIndex = null, 
     }
   ]
   if (splitIndex != null && splitIndex > 0 && splitIndex < n) {
-    series[0].markArea = {
+    lines[0].markArea = {
       silent: true,
       itemStyle: { color: 'rgba(30,111,168,0.055)' },
       label: {
@@ -78,9 +88,43 @@ export function flowOption({ times = [], obs = [], sim = [], splitIndex = null, 
       data: [[{ xAxis: times[splitIndex] }, { xAxis: times[n - 1] }]]
     }
   }
+  let series = lines
+  let yAxis = { ...Y_AXIS, name: yName, nameTextStyle: { color: C_T3, fontSize: 10, align: 'right' } }
+  let grid = { left: 56, right: 14, top: 30, bottom: 44 }
+  if (hasRain) {
+    const rainMax = rain.reduce((m, v) => Math.max(m, Number(v) || 0), 0)
+    series = [
+      {
+        name: '面雨量',
+        type: 'bar',
+        yAxisIndex: 1,
+        data: rain,
+        barWidth: '62%',
+        itemStyle: { color: '#a9c4dc' },
+        z: 1
+      },
+      ...lines
+    ]
+    yAxis = [
+      { ...Y_AXIS, name: yName, nameTextStyle: { color: C_T3, fontSize: 10, align: 'right' } },
+      {
+        type: 'value',
+        name: `P (${rainLabel})`,
+        inverse: true,
+        min: 0,
+        max: rainMax > 0 ? Math.max(rainMax * 2.5, 1) : 1,
+        splitLine: { show: false },
+        axisLine: { show: false },
+        axisTick: { show: false },
+        axisLabel: { color: C_T3, fontSize: 10, formatter: (v) => Number(v).toFixed(0) },
+        nameTextStyle: { color: C_T3, fontSize: 10, align: 'left' }
+      }
+    ]
+    grid = { left: 56, right: 52, top: 30, bottom: 44 }
+  }
   return {
     animation: false,
-    grid: { left: 56, right: 14, top: 30, bottom: 44 },
+    grid,
     tooltip: TIP,
     legend: LEGEND,
     xAxis: {
@@ -96,7 +140,7 @@ export function flowOption({ times = [], obs = [], sim = [], splitIndex = null, 
         formatter: (v) => String(v).slice(0, 10)
       }
     },
-    yAxis: { ...Y_AXIS, name: yName, nameTextStyle: { color: C_T3, fontSize: 10, align: 'right' } },
+    yAxis,
     dataZoom: [
       { type: 'inside', throttle: 60 },
       {

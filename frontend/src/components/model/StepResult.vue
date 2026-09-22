@@ -177,11 +177,12 @@
               <template v-if="active.outlet_station"> · 出口 {{ active.outlet_station }}</template>
               <template v-if="(active.upstream || []).length"> · 上游来流 {{ active.upstream.join('、') }}</template>
               <template v-else> · 无上游来流</template>
+              <template v-if="((active.series || {}).rain || []).some((v) => Number(v) > 0)"> · 浅蓝柱为面雨量（右轴倒挂）</template>
             </span>
             <span class="grow"></span>
             <span v-if="splitIndex != null" class="muted">阴影为验证期</span>
           </div>
-          <EChart :option="flowOpt" :height="252" />
+          <EChart :option="flowOpt" :height="290" />
         </div>
 
         <!-- 洪峰明细 -->
@@ -447,6 +448,8 @@ const metDefs = [
 ]
 
 function periodMet(which) {
+  // 模拟模式：指标来自本次模拟（active.metrics），与率定结果的 metricsMap 无关
+  if (mode.value !== 'calib') return metAll.value
   const m = metricsMap.value[activeCode.value]
   if (!m) return {}
   if (which === 'calib') return m.calib || {}
@@ -487,6 +490,7 @@ const flowOpt = computed(() => {
     times: s.time || [],
     obs: s.obs || [],
     sim: s.sim || [],
+    rain: s.rain || [],
     splitIndex: splitIndex.value
   })
 })
