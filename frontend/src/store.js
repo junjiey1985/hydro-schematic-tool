@@ -24,6 +24,7 @@ export const state = reactive({
     result: null,           // /result（结束后）
     runs: [],               // 历次任务列表
     error: '',              // 任务级错误
+    fcResult: null,         // 情景预报结果（P6）
     poll: 0                 // 轮询定时器 id
   },
   tab: 'map',
@@ -650,6 +651,7 @@ export function clearCalibRun() {
   state.calib.convergence = null
   state.calib.result = null
   state.calib.error = ''
+  state.calib.fcResult = null
 }
 
 /** 确保存在「控制断面」图层，供手工划分使用；返回该图层。 */

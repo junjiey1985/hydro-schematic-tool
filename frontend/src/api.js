@@ -120,5 +120,9 @@ export const api = {
     request(`/api/projects/${pid}/calibration/runs/${rid}/stop`, { method: 'POST' }),
   calibrationResult: (pid, rid) => request(`/api/projects/${pid}/calibration/runs/${rid}/result`),
   calibrationConvergence: (pid, rid) =>
-    request(`/api/projects/${pid}/calibration/runs/${rid}/convergence`)
+    request(`/api/projects/${pid}/calibration/runs/${rid}/convergence`),
+
+  // ---------------- 情景预报（P6）
+  calibrationForecast: (pid, payload = {}) =>
+    request(`/api/projects/${pid}/calibration/forecast`, { method: 'POST', body: payload })
 }

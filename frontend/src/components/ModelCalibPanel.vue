@@ -29,7 +29,8 @@
           <StepCheck v-if="tab === 'check'" @goto="go" />
           <StepConfig v-else-if="tab === 'config'" ref="cfgRef" @goto="go" @started="tab = 'run'" />
           <StepRun v-else-if="tab === 'run'" @goto="go" />
-          <StepResult v-else :view="resultView" @goto="go" />
+          <StepResult v-else-if="tab === 'result'" :view="resultView" @goto="go" />
+          <StepForecast v-else />
         </template>
       </div>
 
@@ -55,6 +56,7 @@ import StepCheck from './model/StepCheck.vue'
 import StepConfig from './model/StepConfig.vue'
 import StepRun from './model/StepRun.vue'
 import StepResult from './model/StepResult.vue'
+import StepForecast from './model/StepForecast.vue'
 import {
   loadCalibrationParams,
   loadCalibrationRuns,
@@ -103,6 +105,13 @@ const tabs = computed(() => [
     label: '结果',
     badge: !!(state.simResult || state.calib.result),
     badgeClass: state.calib.result ? 'ok' : 'idle'
+  },
+  {
+    key: 'forecast',
+    no: '⑤',
+    label: '预报',
+    badge: !!state.fcResult,
+    badgeClass: state.fcResult ? 'ok' : 'idle'
   }
 ])
 

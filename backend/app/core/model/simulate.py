@@ -66,11 +66,16 @@ def _prepare_inputs(
     manifest: dict,
     series_loader,
     period: dict | None = None,
+    extend: dict | None = None,
 ) -> dict:
     """模拟与率定目标**共用的前置装配**：时段轴 / 蒸发 / 逐单元面雨量。
 
     这是最重的开销（读序列 + 逐时段泰森加权装配，~0.5 s），率定时必须只做一次，
     之后每次目标评估只跑模型核（~6 ms）。返回 dict，失败时 ``{"ok": False, "error": ...}``。
+
+    ``extend``（P6 预报）：在时序末尾拼接未来时段——
+    ``{days: 预见期天数, rain_mm: 未来逐日面雨量(标量或序列), evap_mm?: 蒸发假设(默认取历史均值)}``。
+    各单元的观测面雨量只覆盖历史段，未来段统一用 ``rain_mm``（情景雨情）。
     """
     sbs = sorted(subbasins_doc.get("subbasins", []), key=lambda s: (s.get("order_index") or 0))
     if not sbs:
@@ -150,12 +155,39 @@ def _prepare_inputs(
         if miss:
             warnings.append(f"{sb['code']}: {miss} 个时段面雨量缺测，按 0 处理")
 
+    # ---------------- 预报扩展（P6）：历史装配完成后，在时序末尾拼接未来情景时段
+    extend = extend or {}
+    ext_days = min(max(int(extend.get("days") or 0), 0), 3650)
+    n_obs = n
+    if ext_days:
+        ext_evap = extend.get("evap_mm")
+        if ext_evap is None:
+            ext_evap = float(np.mean(e_arr)) if len(e_arr) else 3.0
+        last = axis[-1]
+        axis = axis + [last + timedelta(seconds=step_s * (i + 1)) for i in range(ext_days)]
+        n = len(axis)
+        e_arr = np.concatenate([e_arr, np.full(ext_days, float(ext_evap))])
+        warnings.append(f"预报：末尾拼接 {ext_days} 天情景时段（蒸发按 {ext_evap:.1f} mm/d）")
+        raw_vals = extend.get("rain_mm")
+        if raw_vals is None:
+            vals = [0.0] * ext_days
+        elif isinstance(raw_vals, (list, tuple)):
+            seq = [float(v) for v in raw_vals]
+            vals = (seq + [0.0] * ext_days)[:ext_days]
+        else:
+            vals = [float(raw_vals)] * ext_days
+        for code, arr in unit_rain.items():
+            unit_rain[code] = np.concatenate([arr, np.array(vals, dtype=float)])
+        warnings.append(f"预报：未来 {ext_days} 天采用情景降雨（合计 {sum(vals):.1f} mm），非实测")
+
     return {
         "ok": True,
         "sbs": sbs,
         "axis": axis,
         "times": [dt.strftime("%Y-%m-%d %H:%M") for dt in axis],
         "n": n,
+        "n_obs": n_obs,
+        "extend_days": ext_days,
         "step_s": step_s,
         "dt_h": dt_h,
         "dt_s": dt_s,
@@ -283,6 +315,7 @@ def simulate_basin(
     params: dict | None = None,
     period: dict | None = None,
     return_raw: bool = False,
+    extend: dict | None = None,
 ) -> dict:
     """全流域模拟。
 
@@ -291,8 +324,9 @@ def simulate_basin(
     - series_loader(kind, key) -> [(dt, value)]：序列读取回调
     - params: {unit_code: {K,B,SM,EX,KGF,CG,CI,CS,XE,KE?}}（缺省补默认）
     - period: {"start","end","warmup_days"}（可选）
+    - extend: 预报扩展（见 :func:`_prepare_inputs`），P6 情景预报用
     """
-    ctx = _prepare_inputs(subbasins_doc, manifest, series_loader, period)
+    ctx = _prepare_inputs(subbasins_doc, manifest, series_loader, period, extend=extend)
     if not ctx.get("ok"):
         return ctx
     sbs = ctx["sbs"]
@@ -413,6 +447,12 @@ def simulate_basin(
         "water_balance": [{"code": u["code"], **u["balance"]} for u in unit_info],
         "warnings": warnings,
     }
+    if ctx.get("extend_days"):
+        out["forecast"] = {
+            "start": times[ctx["n_obs"]],
+            "days": ctx["extend_days"],
+            "n_obs": ctx["n_obs"],
+        }
     if return_raw:
         # 内部使用（真值流量生成 / 率定目标函数），不参与 JSON 序列化
         out["_raw"] = {

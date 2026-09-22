@@ -176,6 +176,96 @@ def run_simulate_get(pid: str, start: str = "", end: str = "", warmup_days: int 
     return run_simulate(pid, {"period": period} if period else {})
 
 
+# ---------------------------------------------------------------- 情景预报（P6）
+def _design_rain(total_mm: float, duration_days: int, peak_pos: float | None) -> list[float]:
+    """设计雨型：三角权重（峰在 peak_pos×历时 处，谷底 0.05），按总量缩放。"""
+    duration = max(1, int(duration_days))
+    if duration == 1:
+        return [round(float(total_mm), 3)]
+    pk = min(max(float(peak_pos if peak_pos is not None else 0.4), 0.05), 0.95) * (duration - 1)
+    weights = [max(1.0 - abs(i - pk) / max(pk, duration - 1 - pk), 0.05) for i in range(duration)]
+    scale = float(total_mm) / sum(weights)
+    return [round(w * scale, 3) for w in weights]
+
+
+@router.post("/{pid}/calibration/forecast")
+def run_forecast(pid: str, payload: dict | None = None):
+    """情景预报（P6）：未来雨情（设计雨型或逐日序列）拼接在实测时序末尾，
+    用当前参数沿 parent 链连续演算——历史段天然热启动，预报段即未来出口流量。
+
+    body: {
+      horizon_days: 30,                       # 预见期（1~3650 天）
+      rain: {mode: "design", total_mm, duration_days?, peak_pos?}   # 设计雨型
+          | {mode: "series", values: [逐日mm]},                      # 预测降雨序列
+      evap_mm?: 蒸发假设（默认取历史均值）,
+      params?: {code:{...}}（缺省用当前参数集）,
+      period?: {start,end,warmup_days}        # 历史段窗口
+    }
+    返回 simulate 结构 + forecast{start,days,n_obs} + 各单元 forecast 摘要 + rain_scenario。
+    """
+    get_project_or_404(pid)
+    sub = _require_subbasins(pid)
+    manifest = st.read_ts_manifest(pid)
+    payload = payload or {}
+    horizon = min(max(int(payload.get("horizon_days") or 30), 1), 3650)
+
+    rain_in = payload.get("rain") or {}
+    if (rain_in.get("mode") or "design") == "series":
+        values = [float(v) for v in (rain_in.get("values") or [])]
+        if not values:
+            raise HTTPException(400, "rain.mode=series 时 values 不能为空")
+        rain_mm = (values + [0.0] * horizon)[:horizon]
+        rain_desc = f"逐日预测序列（合计 {sum(rain_mm):.1f} mm / {horizon} 天）"
+    else:
+        total = float(rain_in.get("total_mm") or 0)
+        if total <= 0:
+            raise HTTPException(400, "设计雨型需要 rain.total_mm > 0")
+        dur = min(max(int(rain_in.get("duration_days") or min(horizon, 7)), 1), horizon)
+        rain_mm = _design_rain(total, dur, rain_in.get("peak_pos"))
+        rain_mm = rain_mm + [0.0] * (horizon - len(rain_mm))
+        rain_desc = (
+            f"设计雨型 {total:.0f} mm / {dur} 天"
+            f"（峰位 {float(rain_in.get('peak_pos') or 0.4):.2f}）"
+        )
+
+    extend = {"days": horizon, "rain_mm": rain_mm}
+    if payload.get("evap_mm") is not None:
+        extend["evap_mm"] = float(payload["evap_mm"])
+
+    saved = _read_default_params(pid) or {}
+    merged = dict(saved)
+    for code, prm in (payload.get("params") or {}).items():
+        merged.setdefault(code, {}).update(prm or {})
+
+    res = simulate_basin(sub, manifest, series_loader(pid), params=merged or None,
+                         period=payload.get("period"), extend=extend)
+    if not res.get("ok"):
+        raise HTTPException(400, res.get("error") or "预报失败")
+
+    fc = res.get("forecast") or {}
+    n_obs = int(fc.get("n_obs") or res["n_steps"])
+    start_label = fc.get("start") or ""
+    for u in res.get("units") or []:
+        s = u.get("series") or {}
+        times, sim = s.get("time") or [], s.get("sim") or []
+        idxs = [i for i, t in enumerate(times) if t >= start_label]
+        fv = [float(sim[i]) for i in idxs if i < len(sim)]
+        area = float(u.get("area_km2") or 0)
+        depth = sum(fv) * res["dt_s"] / (area * 1000.0) if area and fv else 0.0
+        peak_i = max(range(len(fv)), key=lambda i: fv[i]) if fv else None
+        u["forecast"] = {
+            "peak_q": round(fv[peak_i], 3) if fv else None,
+            "peak_time": times[idxs[peak_i]] if peak_i is not None and idxs else None,
+            "mean_q": round(sum(fv) / len(fv), 3) if fv else None,
+            "runoff_mm": round(depth, 2),
+            "days": len(fv),
+        }
+
+    res["rain_scenario"] = {"desc": rain_desc, "values": rain_mm, "horizon_days": horizon}
+    res["warnings"] = [*(res.get("warnings") or []), f"预报情景：{rain_desc}（非实测、非实时接入）"]
+    return res
+
+
 # ---------------------------------------------------------------- 率定任务（P3）
 def _progress_path(pid: str, rid: str):
     return st.cal_run_dir(pid, rid) / "progress.json"

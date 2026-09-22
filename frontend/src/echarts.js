@@ -10,6 +10,7 @@ import {
   LegendComponent,
   DataZoomComponent,
   MarkAreaComponent,
+  MarkLineComponent,
   TitleComponent
 } from 'echarts/components'
 import { CanvasRenderer } from 'echarts/renderers'
@@ -21,6 +22,7 @@ use([
   LegendComponent,
   DataZoomComponent,
   MarkAreaComponent,
+  MarkLineComponent,
   TitleComponent,
   CanvasRenderer
 ])
