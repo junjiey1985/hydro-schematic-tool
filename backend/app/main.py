@@ -1,4 +1,4 @@
-"""水系概化图工具 —— FastAPI 服务入口。
+"""流域水文建模平台 —— FastAPI 服务入口。
 
 单端口同时提供 REST 接口与前端静态资源，便于内网/云端一体化部署。
 """
@@ -14,7 +14,7 @@ from .config import FRONTEND_DIST
 from .routers import analysis, calibration, dem_api, layers, projects, subbasins, timeseries
 
 app = FastAPI(
-    title="水系概化图工具",
+    title="流域水文建模平台",
     description="水系/站点 SHP 导入、DEM 实时生成河网、拓扑关系构建与水系概化图编辑",
     version="0.1.0",
 )

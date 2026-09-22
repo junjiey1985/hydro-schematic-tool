@@ -21,9 +21,13 @@ agent-browser close > /dev/null 2>&1
 agent-browser open "http://127.0.0.1:8013" > debug_shots/ab.log 2>&1
 sleep 6
 agent-browser snapshot > debug_shots/snap8_1.txt 2>&1
-chk "品牌标题" "水系概化图工具" debug_shots/snap8_1.txt
+chk "品牌标题（新名称）" "流域水文建模平台" debug_shots/snap8_1.txt
 chk "新建项目按钮" 'button "＋ 新建项目"' debug_shots/snap8_1.txt
-chk "示例流域按钮" "导入示例流域" debug_shots/snap8_1.txt
+if grep -q "导入示例流域" debug_shots/snap8_1.txt; then
+  echo "FAIL  已移除「导入示例流域」按钮"; FAIL=$((FAIL+1))
+else
+  echo "PASS  已移除「导入示例流域」按钮"; PASS=$((PASS+1))
+fi
 chk "项目卡片（堵河）" "堵河" debug_shots/snap8_1.txt
 chk "拓扑标记" "拓扑 ✓" debug_shots/snap8_1.txt
 chk "图层计数" "个图层" debug_shots/snap8_1.txt
@@ -44,7 +48,7 @@ echo "############ [3] 品牌点击返回开始页 ############"
 ab eval "(function(){var b=document.querySelector('.brand'); if(!b) return 'no-brand'; b.click(); return 'clicked'})()"
 sleep 2
 agent-browser snapshot > debug_shots/snap8_3.txt 2>&1
-chk "回到开始页（新建按钮）" "导入示例流域" debug_shots/snap8_3.txt
+chk "回到开始页（新建按钮）" "进入工作台" debug_shots/snap8_3.txt
 shot p8_03_back_home
 
 echo
@@ -105,11 +109,13 @@ else
 fi
 
 echo
-echo "############ [7] 开始页 → 示例项目一键创建（真实导入）→ 清理 ############"
-ab eval "(function(){var b=[...document.querySelectorAll('button')].find(function(x){return x.textContent.indexOf('导入示例流域')>=0}); if(!b) return 'no-btn'; b.click(); return 'clicked'})()"
+echo "############ [7] 开始页 → 弹窗选示例项目创建（真实导入）→ 清理 ############"
+ab eval "(function(){var b=[...document.querySelectorAll('button')].find(function(x){return x.textContent.indexOf('＋ 新建项目')>=0}); if(!b) return 'no-btn'; b.click(); return 'clicked'})()"
+sleep 2
+ab eval "(function(){var m=[...document.querySelectorAll('.mode')].find(function(x){return x.textContent.indexOf('示例项目')>=0}); if(!m) return 'no-mode'; m.click(); return 'switched'})()"
 sleep 2
 agent-browser snapshot > debug_shots/snap8_8.txt 2>&1
-chk "示例模式默认选中" "创建并导入示例数据" debug_shots/snap8_8.txt
+chk "弹窗内切到示例项目" "创建并导入示例数据" debug_shots/snap8_8.txt
 ab eval "(function(){var b=[...document.querySelectorAll('.modal .foot button')].find(function(x){return x.textContent.indexOf('创建并导入')>=0}); if(!b) return 'no-btn'; b.click(); return 'go'})()"
 echo "  已触发示例导入，等待完成…"
 sleep 75

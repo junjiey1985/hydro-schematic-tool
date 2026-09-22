@@ -6,12 +6,11 @@
         <div class="brand-lg">
           <div class="logo">水</div>
           <div>
-            <h1>水系概化图工具</h1>
+            <h1>流域水文建模平台</h1>
             <p>河流水系数字化 · 拓扑概化 · 水文模拟与参数率定</p>
           </div>
         </div>
         <div class="home-actions">
-          <button class="btn ghost" @click="$emit('create', 'sample')">导入示例流域</button>
           <button class="btn primary" @click="$emit('create', 'blank')">＋ 新建项目</button>
         </div>
       </div>
@@ -63,7 +62,7 @@
       </div>
 
       <div v-if="ready && !projects.length" class="home-empty">
-        还没有项目——点上面「导入示例流域」可一键体验 DEM 生成河网 → 拓扑 → 概化图 → 率定全流程。
+        还没有项目——点「＋ 新建项目」后选择 <b>示例项目</b>，一键体验 DEM 生成河网 → 拓扑 → 概化图 → 率定全流程。
       </div>
     </div>
 

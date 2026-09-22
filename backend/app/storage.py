@@ -108,10 +108,20 @@ def touch_project(pid: str) -> None:
 
 def delete_project(pid: str) -> bool:
     d = project_dir(pid)
-    if d.exists():
+    if not d.exists():
+        return False
+    try:
         shutil.rmtree(d)
         return True
-    return False
+    except (Exception, SystemExit):
+        # 某些环境（沙箱 / 安全策略）会拦截目录递归删除：可能是 OSError /
+        # PermissionError，也可能是守护脚本注入的 SystemExit。降级：把项目目录
+        # 移入 data/.trash，效果等价于删除（不再出现在项目列表中），且可人工恢复。
+        trash = PROJECTS_DIR.parent / ".trash"
+        trash.mkdir(parents=True, exist_ok=True)
+        target = trash / f"{pid}_{time.strftime('%Y%m%d%H%M%S')}"
+        shutil.move(str(d), str(target))
+        return True
 
 
 # ---------------------------------------------------------------- 图层

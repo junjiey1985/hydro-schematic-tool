@@ -7,7 +7,7 @@
     <div class="topbar">
       <div class="brand" title="返回项目列表" @click="goHome">
         <div class="logo">水</div>
-        <span>水系概化图工具</span>
+        <span>流域水文建模平台</span>
       </div>
 
       <select class="proj-sel" :value="state.project ? state.project.id : ''" @change="onProjectChange">

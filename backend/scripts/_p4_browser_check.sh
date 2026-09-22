@@ -31,10 +31,11 @@ sleep 5
 echo
 echo "############ [0] 开始页进入项目（P8 起默认先落开始页） ############"
 agent-browser snapshot > debug_shots/snap_0.txt 2>&1
-if grep -q "进入工作台\|导入示例流域" debug_shots/snap_0.txt; then
-  ab eval "(function(){var c=[...document.querySelectorAll('.card')].find(function(x){return !x.className.includes('new')}); if(!c) return 'no-card'; c.click(); return 'clicked'})()"
+if grep -q "进入工作台" debug_shots/snap_0.txt; then
+  # 选「图层最多的项目」——避免误入测试残留的空白项目（同步 XHR 取项目清单）
+  ab eval "(function(){var x=new XMLHttpRequest(); x.open('GET','/api/projects',false); x.send(); var ps=JSON.parse(x.responseText).projects; ps.sort(function(a,b){return b.layer_count-a.layer_count}); var t=ps[0]; var cards=[].slice.call(document.querySelectorAll('.card')).filter(function(c){return c.className.indexOf('new')<0}); var c=cards.filter(function(el){return el.textContent.indexOf(t.name)>=0 && el.textContent.indexOf(t.layer_count+' 个图层')>=0})[0]; if(!c) return 'no-card'; c.click(); return 'clicked:'+t.name+'/'+t.layer_count})()"
   sleep 6
-  echo "  已从开始页进入项目"
+  echo "  已从开始页进入项目（图层最多的那个）"
 fi
 agent-browser snapshot > debug_shots/snap_0b.txt 2>&1
 chk "项目已载入（顶栏 DEM 按钮可用）" "DEM 与河网自动生成" debug_shots/snap_0b.txt
