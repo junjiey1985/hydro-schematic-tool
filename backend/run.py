@@ -19,7 +19,7 @@ def main() -> None:
 
     from app.config import FRONTEND_DIST
 
-    ap = argparse.ArgumentParser(description="水系概化图工具")
+    ap = argparse.ArgumentParser(description="流域水文建模平台")
     ap.add_argument("--host", default="0.0.0.0")
     ap.add_argument("--port", type=int, default=8000)
     ap.add_argument("--reload", action="store_true", help="开发模式，代码变更自动重启")
@@ -27,7 +27,7 @@ def main() -> None:
 
     built = (FRONTEND_DIST / "index.html").exists()
     print("=" * 62)
-    print("  水系概化图工具")
+    print("  流域水文建模平台")
     print(f"  前端静态资源：{'已构建' if built else '未构建（请先执行 frontend/npm run build）'}")
     print(f"  访问地址：http://127.0.0.1:{args.port}/")
     print(f"  接口文档：http://127.0.0.1:{args.port}/docs")

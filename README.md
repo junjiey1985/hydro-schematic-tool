@@ -19,8 +19,8 @@
 ## 快速开始
 
 ```bash
-# 1) 后端依赖（首次）
-C:/Users/giser/.workbuddy/binaries/python/envs/default/Scripts/python.exe -m pip install fastapi uvicorn numpy scipy shapely networkx pyproj pyshp
+# 1) 后端依赖（首次；依赖清单见 backend/requirements.txt）
+C:/Users/giser/.workbuddy/binaries/python/envs/default/Scripts/python.exe -m pip install -r backend/requirements.txt
 
 # 2) 前端依赖与构建（首次）
 cd frontend
@@ -39,6 +39,19 @@ python run.py --host 127.0.0.1 --port 8013
 浏览器打开 <http://127.0.0.1:8013>，在开始页点「＋ 新建项目」→ 选「示例项目」即可一键体验全流程（合成 DEM → 河网提取 → 拓扑 → 概化图）；已有项目直接点卡片进入。
 
 开发模式：`backend: python run.py --port 8000` + `frontend: npm run dev`（Vite 代理 /api）。
+
+### Docker 部署
+
+```bash
+docker build -t hydro-platform .
+docker run -d -p 8013:8013 -v hydro-data:/data hydro-platform
+# 浏览器打开 http://<主机>:8013/
+```
+
+- 多阶段构建：Node 20 构建前端 → Python 3.12 运行时（依赖见 `backend/requirements.txt`）
+- 数据持久化：项目数据目录通过 `HYDRO_DATA_DIR` 指向容器内 `/data`，用 `-v 本机目录:/data` 可把项目落到宿主机
+- 示例数据（可选）：进入容器执行 `python scripts/make_real_samples.py` 生成真实流域示例（生成后开始页「新建项目 → 示例项目」可用）
+- 也可不用 Docker 直接部署：`pip install -r backend/requirements.txt` → `cd frontend && npm ci && npm run build` → `python run.py --host 0.0.0.0 --port 8013`
 
 ## 数据来源（三种）
 
