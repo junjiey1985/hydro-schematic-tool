@@ -22,6 +22,12 @@ echo "############ 打开应用与面板 ############"
 ab open "http://127.0.0.1:8013"
 ab wait --load load
 sleep 5
+# P8 起默认先落开始页：有卡片则先进项目
+agent-browser snapshot > debug_shots/snap6_0.txt 2>&1
+if grep -q "导入示例流域" debug_shots/snap6_0.txt; then
+  ab eval "(function(){var c=[...document.querySelectorAll('.card')].find(function(x){return !x.className.includes('new')}); if(!c) return 'no-card'; c.click(); return 'clicked'})()"
+  sleep 6
+fi
 ab click ".mdl-open"
 sleep 3
 

@@ -29,6 +29,17 @@ ab wait --load load
 sleep 5
 
 echo
+echo "############ [0] 开始页进入项目（P8 起默认先落开始页） ############"
+agent-browser snapshot > debug_shots/snap_0.txt 2>&1
+if grep -q "进入工作台\|导入示例流域" debug_shots/snap_0.txt; then
+  ab eval "(function(){var c=[...document.querySelectorAll('.card')].find(function(x){return !x.className.includes('new')}); if(!c) return 'no-card'; c.click(); return 'clicked'})()"
+  sleep 6
+  echo "  已从开始页进入项目"
+fi
+agent-browser snapshot > debug_shots/snap_0b.txt 2>&1
+chk "项目已载入（顶栏 DEM 按钮可用）" "DEM 与河网自动生成" debug_shots/snap_0b.txt
+
+echo
 echo "############ [1] 打开「模型与率定」面板 ############"
 ab click ".mdl-open"
 sleep 3

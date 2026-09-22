@@ -3,6 +3,7 @@ import { api } from './api'
 
 export const state = reactive({
   ready: false,
+  home: true,           // 开始页（项目卡片列表）
   projects: [],
   project: null,
   layers: [],
@@ -136,13 +137,15 @@ export async function bootstrap() {
   state.ready = false
   try {
     await loadProjects()
-    if (state.projects.length) {
-      await openProject(state.projects[0].id)
-    }
   } catch (e) {
     toast('初始化失败：' + e.message, 'err')
   }
   state.ready = true
+}
+
+/** 回到开始页（保留当前项目加载状态，返回时无需重新载入）。 */
+export function goHome() {
+  state.home = true
 }
 
 export async function createProject(name, description) {
@@ -165,6 +168,7 @@ export async function importSamples(payload = {}) {
 export async function openProject(pid) {
   return withBusy('正在载入项目…', async () => {
     const same = state.project && state.project.id === pid
+    state.home = false
     state.project = await api.getProject(pid)
     if (!same) state.layerData = {} // 换项目才清空；重复打开保留缓存
     state.selection = null
@@ -187,6 +191,28 @@ export async function openProject(pid) {
 }
 
 export async function removeProject(pid) {
+  const wasOpen = state.project && state.project.id === pid
+  await api.deleteProject(pid)
+  await loadProjects()
+  if (wasOpen) {
+    // 从开始页语义出发：删除后回到项目列表，而不是自动打开别的项目
+    state.project = null
+    state.layers = []
+    state.layerData = {}
+    state.topology = null
+    state.schematic = null
+    state.schematicWorking = null
+    state.subbasins = null
+    state.timeseries = null
+    state.simResult = null
+    clearCalibRun()
+    state.home = true
+  }
+  toast('项目已删除', 'ok')
+}
+
+/** 开始页上删除项目（不动已加载的工作区）。 */
+export async function removeProjectFromHome(pid) {
   await api.deleteProject(pid)
   await loadProjects()
   if (state.project && state.project.id === pid) {
@@ -198,7 +224,6 @@ export async function removeProject(pid) {
     state.schematicWorking = null
     state.subbasins = null
   }
-  if (state.projects.length) await openProject(state.projects[0].id)
   toast('项目已删除', 'ok')
 }
 

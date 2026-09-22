@@ -1,8 +1,11 @@
 <template>
-  <div class="app">
+  <!-- ============ 开始页（项目卡片） ============ -->
+  <ProjectHome v-if="state.home" @open="enterProject" @create="openNewProject" />
+
+  <div v-else class="app">
     <!-- ============ 顶栏 ============ -->
     <div class="topbar">
-      <div class="brand">
+      <div class="brand" title="返回项目列表" @click="goHome">
         <div class="logo">水</div>
         <span>水系概化图工具</span>
       </div>
@@ -455,6 +458,9 @@
       </div>
     </div>
   </div>
+
+  <!-- ============ 提示（全局，开始页与工作台共用） ============ -->
+  <div v-if="state.toast.show" class="toast" :class="state.toast.type">{{ state.toast.text }}</div>
 </template>
 
 <script setup>
@@ -462,6 +468,7 @@ import { computed, defineAsyncComponent, onMounted, reactive, ref, watch } from 
 import MapView from './components/MapView.vue'
 import SchematicView from './components/SchematicView.vue'
 import SidePanel from './components/SidePanel.vue'
+import ProjectHome from './components/ProjectHome.vue'
 import TimeseriesPanel from './components/TimeseriesPanel.vue'
 // 模型率定面板体积较大（含 ECharts）：按需异步加载，不进首屏 bundle
 const ModelCalibPanel = defineAsyncComponent(() => import('./components/ModelCalibPanel.vue'))
@@ -472,6 +479,7 @@ import {
   createProject,
   importSamples,
   openProject,
+  goHome,
   removeProject,
   uploadShp,
   uploadDem,
@@ -756,6 +764,12 @@ function onProjectChange(e) {
   if (pid) openProject(pid)
 }
 
+/** 开始页点击项目卡片进入工作台 */
+function enterProject(pid) {
+  if (!pid) return
+  openProject(pid)
+}
+
 async function doCreateProject() {
   if (!canCreate.value) return
   const name = form.name.trim()
@@ -842,6 +856,13 @@ async function doRemoveDem() {
 </script>
 
 <style scoped>
+/* 顶栏品牌：点击返回开始页 */
+.brand {
+  cursor: pointer;
+}
+.brand:hover .logo {
+  opacity: 0.85;
+}
 /* 视图切换：浮在地图/概化图区域顶部居中 */
 .view-tabs {
   position: absolute;
