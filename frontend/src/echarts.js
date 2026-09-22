@@ -3,7 +3,7 @@
  * 新增图表类型时在此处 use() 登记即可。
  */
 import { use, init } from 'echarts/core'
-import { LineChart } from 'echarts/charts'
+import { BarChart, LineChart } from 'echarts/charts'
 import {
   GridComponent,
   TooltipComponent,
@@ -16,6 +16,7 @@ import {
 import { CanvasRenderer } from 'echarts/renderers'
 
 use([
+  BarChart,
   LineChart,
   GridComponent,
   TooltipComponent,

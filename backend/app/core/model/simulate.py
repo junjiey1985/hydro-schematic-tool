@@ -392,6 +392,7 @@ def simulate_basin(
                 "outlet_station_id": o_sid or None,
                 "q": q_out,
                 "obs": obs,
+                "p": p_unit,
                 "balance": res["balance"],
             }
         )
@@ -416,6 +417,20 @@ def simulate_basin(
                     if 0 <= e["sim_step"] < len(t_valid):
                         e["sim_time"] = t_valid[e["sim_step"]]
         stride = max(1, (n - i0) // 1200)
+        ser = {
+            "time": times[i0::stride],
+            "sim": [round(float(v), 3) for v in q[i0::stride]],
+            "obs": (
+                [round(float(v), 3) if np.isfinite(v) else None for v in obs[i0::stride]]
+                if obs is not None
+                else None
+            ),
+            "rain": [round(float(v), 2) for v in u["p"][i0::stride]],
+        }
+        n_obs = int(ctx.get("n_obs") or n)
+        if ctx.get("extend_days"):
+            # series 内「历史段 → 预报段」分界索引（前端据此分色绘制实测面雨量 / 情景降雨）
+            ser["rain_forecast_index"] = min(max(int(-(-(n_obs - i0) // stride)), 0), len(ser["time"]))
         out_units.append(
             {
                 "code": u["code"],
@@ -426,15 +441,7 @@ def simulate_basin(
                 "outlet_station": u["outlet_station"],
                 "balance": u["balance"],
                 "metrics": met,
-                "series": {
-                    "time": times[i0::stride],
-                    "sim": [round(float(v), 3) for v in q[i0::stride]],
-                    "obs": (
-                        [round(float(v), 3) if np.isfinite(v) else None for v in obs[i0::stride]]
-                        if obs is not None
-                        else None
-                    ),
-                },
+                "series": ser,
             }
         )
 

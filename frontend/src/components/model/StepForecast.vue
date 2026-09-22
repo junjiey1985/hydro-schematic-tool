@@ -53,7 +53,8 @@
     <!-- 结果 -->
     <template v-if="result">
       <div class="sub-sec">
-        ② 预报过程线
+        ② 预报过程线与降雨驱动
+        <span class="muted">上框：面雨量（倒挂柱，历史段实测 / 预报段情景）；下框：出口流量</span>
         <span class="grow"></span>
         <span class="pair">
           <span v-for="u in units" :key="u.code">
@@ -62,8 +63,22 @@
           </span>
         </span>
       </div>
+      <div class="units">
+        <button
+          v-for="u in units"
+          :key="u.code"
+          class="ubtn"
+          :class="{ on: u.code === activeCode }"
+          @click="activeCode = u.code"
+        >
+          <span class="dot" :style="{ background: colorOf(u.code) }"></span>
+          {{ u.code }}
+          <b>{{ fmt(u.forecast && u.forecast.peak_q, 0) }}</b>
+        </button>
+        <span v-if="rainSummary" class="muted small">{{ rainSummary }}</span>
+      </div>
       <div class="chart-box">
-        <EChart :option="chartOption" :height="248" />
+        <EChart :option="chartOption" :height="300" />
       </div>
 
       <div class="sub-sec">
@@ -132,7 +147,14 @@ onMounted(() => {
 })
 
 const units = computed(() => (result.value && result.value.units) || [])
+const curUnit = computed(() => units.value.find((x) => x.code === activeCode.value) || units.value[0] || null)
 const scenarioDesc = computed(() => (result.value && result.value.rain_scenario && result.value.rain_scenario.desc) || '')
+
+// 降雨步长文案：日模型显示「天」，小时模型显示「h」
+const rainStepLabel = computed(() => {
+  const dt = Number((result.value || {}).dt_s || 86400)
+  return dt >= 86400 ? '天' : dt >= 3600 ? 'h' : '时段'
+})
 
 const canRun = computed(() => {
   if (running.value || !state.project) return false
@@ -174,22 +196,68 @@ async function runForecast() {
   }
 }
 
+// 当前单元的历史段实测面雨量 / 预报段情景降雨（切分索引优先取后端给出的 rain_forecast_index）
+const rainSplit = computed(() => {
+  const u = curUnit.value
+  if (!u || !u.series) return { idx: 0, rain: [] }
+  const rain = u.series.rain || []
+  let idx = u.series.rain_forecast_index
+  if (idx == null) {
+    const r = result.value || {}
+    const fStart = (r.forecast || {}).start || ''
+    const t = u.series.time || []
+    idx = Math.max(0, t.findIndex((x) => x >= fStart))
+    if (idx < 0) idx = 0
+  }
+  return { idx: Math.min(Math.max(idx, 0), rain.length), rain }
+})
+
+const rainSummary = computed(() => {
+  const { idx, rain } = rainSplit.value
+  if (!rain.length) return ''
+  const sum = (a) => a.reduce((s, v) => s + (Number(v) || 0), 0)
+  const obs = sum(rain.slice(0, idx))
+  const fc = sum(rain.slice(idx))
+  const unitTxt = rainStepLabel.value
+  return `历史段实测面雨量 ${obs.toFixed(0)} mm（${idx} ${unitTxt}） · 预报段情景降雨 ${fc.toFixed(0)} mm（${rain.length - idx} ${unitTxt}）`
+})
+
 const chartOption = computed(() => {
   const r = result.value
   if (!r) return {}
-  const u = units.value.find((x) => x.code === activeCode.value) || units.value[0]
+  const u = curUnit.value
   if (!u || !u.series) return {}
   const t = u.series.time || []
   const sim = u.series.sim || []
+  const obs = u.series.obs || []
+  const { idx, rain } = rainSplit.value
+  // 历史段与预报段拆成两条柱系列，避免图例与配色混淆
+  const rainObs = rain.map((v, i) => (i < idx ? v : null))
+  const rainFc = rain.map((v, i) => (i >= idx ? v : null))
+  const rainMax = rain.reduce((m, v) => Math.max(m, Number(v) || 0), 0)
   const fStart = (r.forecast || {}).start || ''
   let fIdx = t.findIndex((x) => x >= fStart)
   if (fIdx < 0) fIdx = 0
+  const stepLabel = rainStepLabel.value
   return {
     animation: false,
-    grid: { left: 60, right: 16, top: 26, bottom: 52 },
+    grid: { left: 62, right: 58, top: 30, bottom: 54 },
+    legend: { top: 0, itemWidth: 14, itemHeight: 8, textStyle: { fontSize: 10, color: '#6b7785' } },
     tooltip: {
       trigger: 'axis',
-      valueFormatter: (v) => (v == null ? '—' : `${Number(v).toFixed(1)} m³/s`)
+      textStyle: { fontSize: 11 },
+      formatter: (ps) => {
+        if (!ps || !ps.length) return ''
+        const head = ps[0].axisValueLabel || ps[0].name
+        const rows = ps
+          .filter((p) => p.value != null)
+          .map((p) => {
+            const isRain = (p.seriesName || '').indexOf('雨') >= 0
+            const val = Number(p.value)
+            return `${p.marker}${p.seriesName}：${isRain ? val.toFixed(1) + ' mm' : val.toFixed(1) + ' m³/s'}`
+          })
+        return [head, ...rows].join('<br/>')
+      }
     },
     dataZoom: [{ type: 'inside' }, { type: 'slider', height: 14, bottom: 6 }],
     xAxis: {
@@ -197,34 +265,78 @@ const chartOption = computed(() => {
       data: t,
       axisLabel: { color: '#8a97a5', fontSize: 10 }
     },
-    yAxis: {
-      type: 'value',
-      name: 'Q (m³/s)',
-      scale: true,
-      nameTextStyle: { color: '#8a97a5', fontSize: 10 },
-      axisLabel: { color: '#8a97a5', fontSize: 10 },
-      splitLine: { lineStyle: { color: '#f0f2f5' } }
-    },
+    yAxis: [
+      {
+        type: 'value',
+        name: 'Q (m³/s)',
+        scale: true,
+        nameTextStyle: { color: '#8a97a5', fontSize: 10 },
+        axisLabel: { color: '#8a97a5', fontSize: 10 },
+        splitLine: { lineStyle: { color: '#f0f2f5' } }
+      },
+      {
+        type: 'value',
+        name: `P (mm/${stepLabel})`,
+        inverse: true, // 降雨自上而下
+        max: rainMax > 0 ? Math.max(rainMax * 2.5, 1) : 1,
+        min: 0,
+        nameTextStyle: { color: '#8a97a5', fontSize: 10 },
+        axisLabel: { color: '#8a97a5', fontSize: 10, formatter: (v) => Number(v).toFixed(0) },
+        splitLine: { show: false }
+      }
+    ],
     series: [
       {
-        name: '流量',
-        type: 'line',
-        showSymbol: false,
-        data: sim,
-        lineStyle: { color: '#1e6fa8', width: 1.6 },
+        name: '实测面雨量',
+        type: 'bar',
+        yAxisIndex: 1,
+        data: rainObs,
+        barWidth: '62%',
+        itemStyle: { color: '#8fb3cc' },
+        markArea: {
+          silent: true,
+          itemStyle: { color: 'rgba(30, 111, 168, 0.06)' },
+          data: [[{ xAxis: fIdx, name: '预报期' }, { xAxis: t.length - 1 }]]
+        },
         markLine: {
           symbol: 'none',
           silent: true,
           label: { formatter: '预报起点', color: '#c0392b', fontSize: 10 },
           lineStyle: { color: '#c0392b', type: 'dashed' },
           data: [{ xAxis: fIdx }]
-        },
-        markArea: {
-          silent: true,
-          itemStyle: { color: 'rgba(30, 111, 168, 0.07)' },
-          data: [[{ xAxis: fIdx, name: '预报期' }, { xAxis: t.length - 1 }]]
         }
-      }
+      },
+      {
+        name: '情景降雨',
+        type: 'bar',
+        yAxisIndex: 1,
+        data: rainFc,
+        barWidth: '62%',
+        itemStyle: { color: '#e8a33d' }
+      },
+      {
+        name: '出口流量（模拟）',
+        type: 'line',
+        yAxisIndex: 0,
+        showSymbol: false,
+        data: sim,
+        z: 5,
+        lineStyle: { color: '#1e6fa8', width: 1.6 },
+        itemStyle: { color: '#1e6fa8' }
+      },
+      ...(obs.some((v) => v != null)
+        ? [
+            {
+              name: '出口流量（实测）',
+              type: 'scatter',
+              yAxisIndex: 0,
+              symbolSize: 3,
+              z: 6,
+              data: obs,
+              itemStyle: { color: '#c0392b', opacity: 0.75 }
+            }
+          ]
+        : [])
     ]
   }
 })
@@ -266,6 +378,36 @@ function fmt(v, n = 1) {
 .num-in {
   width: 74px;
   text-align: right;
+}
+.units {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-bottom: 9px;
+}
+.ubtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 11px;
+  border: 1px solid var(--line-strong);
+  border-radius: 20px;
+  background: #fff;
+  color: var(--text-2);
+  font-size: 12px;
+}
+.ubtn:hover {
+  border-color: var(--primary);
+}
+.ubtn.on {
+  border-color: var(--primary);
+  background: var(--primary-soft);
+  color: var(--primary);
+  font-weight: 600;
+}
+.ubtn b {
+  font-variant-numeric: tabular-nums;
 }
 .series-in {
   flex: 1;

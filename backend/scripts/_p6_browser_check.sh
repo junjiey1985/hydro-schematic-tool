@@ -45,11 +45,18 @@ ab click "#fc-run"
 echo "  已点击「运行预报」"
 sleep 6
 agent-browser snapshot > debug_shots/snap6_2.txt 2>&1
-chk "预报过程线区" "预报过程线" debug_shots/snap6_2.txt
+chk "预报过程线区" "预报过程线与降雨驱动" debug_shots/snap6_2.txt
 chk "预报段洪峰摘要" "预报段洪峰摘要" debug_shots/snap6_2.txt
 chk "情景描述" "设计雨型 100 mm / 7 天" debug_shots/snap6_2.txt
 chk "洪峰单位" "m³/s" debug_shots/snap6_2.txt
+chk "降雨摘要-历史段实测" "历史段实测面雨量" debug_shots/snap6_2.txt
+chk "降雨摘要-预报段情景" "预报段情景降雨" debug_shots/snap6_2.txt
+chk "单元切换 chips" "S01" debug_shots/snap6_2.txt
 shot p6_02_result
+# 滚动到图表再截一张（确认降雨柱与流量线 canvas 渲染）
+ab eval "(function(){var f=document.querySelector('.chart-box'); if(!f) return 'no-chart'; f.scrollIntoView({block:'center'}); return 'ok'})()" >>"$LOG" 2>&1
+sleep 1
+shot p6_04_rain_chart
 
 echo
 echo "############ [3] 切逐日序列并重跑 ############"
