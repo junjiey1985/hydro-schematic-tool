@@ -32,8 +32,10 @@
       <template v-if="mode === 'calib'">
         <div class="sub-sec">
           ① 单元率定情况
-          <span class="muted">按排水序自上而下链式率定；无出口实测的单元不独立率定</span>
+          <span class="muted">{{ calib.joint ? '联合率定：全站同时优化，目标为各站加权平均' : '按排水序自上而下链式率定；无出口实测的单元不独立率定' }}</span>
           <span class="grow"></span>
+          <a class="btn sm" :href="exportUrl('params')" download>导出参数 CSV</a>
+          <a class="btn sm" :href="exportUrl('flow')" download>导出过程线 CSV</a>
           <button id="cal-adopt" class="btn primary sm" :disabled="!!state.busy" @click="adopt">
             采纳为项目参数
           </button>
@@ -72,6 +74,9 @@
                     {{ u.calibrated ? '已率定' : statusCn(u.status) }}
                   </span>
                   <span v-if="u.borrowed_from" class="muted"> ← {{ u.borrowed_from }}</span>
+                  <span v-if="u.shared_keys && u.shared_keys.length" class="muted">
+                    （{{ u.shared_keys.join('、') }} 共享）
+                  </span>
                 </td>
                 <td class="num" :class="nseClass(mOf(u.code, 'calib'))">{{ fmt(mOf(u.code, 'calib'), 3) }}</td>
                 <td class="num" :class="nseClass(mOf(u.code, 'valid'))">{{ fmt(mOf(u.code, 'valid'), 3) }}</td>
@@ -418,6 +423,13 @@ async function adopt() {
   if (!confirm(`将任务 ${String(rid).slice(0, 8)} 的最终参数采纳为项目默认参数集？`)) return
   await adoptCalibrationResult(rid)
   emit('goto', 'config', {})
+}
+
+// ---------------- 导出（P5：导出表入模）
+function exportUrl(what) {
+  const pid = state.project && state.project.id
+  const rid = (calib.value && calib.value.run_id) || ''
+  return `/api/projects/${pid}/calibration/export?what=${what}&rid=${rid}`
 }
 
 function colorOf(code) {

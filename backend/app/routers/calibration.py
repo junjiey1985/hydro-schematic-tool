@@ -11,7 +11,8 @@ import time
 import urllib.parse
 import uuid
 
-from fastapi import APIRouter, HTTPException
+import numpy as np
+from fastapi import APIRouter, HTTPException, Response
 
 from .. import storage as st
 from ..core.model.calibrate import run_calibration
@@ -263,6 +264,11 @@ def _worker(pid: str, rid: str, cfg: dict, sub: dict) -> None:
             "ok": True, "run_id": rid, "pid": pid, "finished_at": st.now_iso(),
             "status": res.get("status") or "done",
             "stopped": res.get("status") == "stopped",
+            "mode": res.get("mode") or "chain",
+            "joint": bool(res.get("joint")),
+            "objective": res.get("objective"),
+            "slots": res.get("slots") or [],
+            "joint_convergence": res.get("joint_convergence") or [],
             "elapsed_s": elapsed, "config": cfg,
             "units": res.get("units") or [],
             "metrics": res.get("metrics") or [],
@@ -304,10 +310,12 @@ def _check_runnable(pid: str) -> dict:
 
 @router.post("/{pid}/calibration/run")
 def start_run(pid: str, payload: dict | None = None):
-    """启动 SCE-UA 链式率定（后台线程），返回 run_id。
+    """启动 SCE-UA 率定（后台线程），返回 run_id。
 
-    body: {period{start,end,warmup_days}, split, max_evals, seed, tol,
-           lock: {code:{参数:值}}}
+    body: {mode?: "chain"|"joint", period{start,end,warmup_days}, split, max_evals,
+           seed, tol, lock: {code:{参数:值}},
+           share?: {参数:[单元...]}（联合模式参数共享分组）,
+           weights?: {code: 权重}（联合模式各站权重，默认 1）}
     """
     get_project_or_404(pid)
     sub = _check_runnable(pid)
@@ -316,13 +324,19 @@ def start_run(pid: str, payload: dict | None = None):
             if e.get("pid") == pid and e.get("thread") and e["thread"].is_alive():
                 raise HTTPException(409, f"该项目已有率定任务在运行（{rid}），请先等待完成或终止")
     payload = payload or {}
+    mode = str(payload.get("mode") or "chain").strip().lower()
+    if mode not in ("chain", "joint"):
+        raise HTTPException(400, f"不支持的率定模式: {mode}（可选 chain / joint）")
     cfg = {
+        "mode": mode,
         "period": payload.get("period") or None,
         "split": payload.get("split") or 0.7,
         "max_evals": int(payload.get("max_evals") or 3000),
         "seed": int(payload.get("seed") or 0),
         "tol": payload.get("tol") or 1e-4,
         "lock": payload.get("lock") or {},
+        "share": payload.get("share") or {},
+        "weights": payload.get("weights") or {},
     }
     rid = uuid.uuid4().hex[:10]
     st.write_json_file(
@@ -443,13 +457,15 @@ def run_convergence(pid: str, rid: str):
     get_project_or_404(pid)
     doc = st.read_json_file(st.cal_run_dir(pid, rid) / "result.json")
     if doc:
-        return {
-            "ok": True, "finished": True,
-            "curve": [
+        if doc.get("joint_convergence"):
+            # 联合模式：整条链一个收敛史（逐代多站加权目标）
+            curve = [{"code": "JOINT", "points": doc["joint_convergence"]}]
+        else:
+            curve = [
                 {"code": u["code"], "points": u.get("convergence") or []}
                 for u in doc.get("units") or []
-            ],
-        }
+            ]
+        return {"ok": True, "finished": True, "joint": bool(doc.get("joint")), "curve": curve}
     prog = _read_progress(pid, rid)
     if not prog:
         raise HTTPException(404, f"任务不存在: {rid}")
@@ -467,3 +483,76 @@ def run_convergence(pid: str, rid: str):
         "evals": prog.get("evals"), "elapsed_s": prog.get("elapsed_s"),
         "curve": [{"code": c, "points": pts} for c, pts in grouped.items()],
     }
+
+
+# ---------------------------------------------------------------- 导出（P5：导出表入模）
+def _csv_response(body: str, filename: str) -> Response:
+    """CSV 下载响应（带 BOM，Excel 直接打开不乱码）。"""
+    return Response(
+        content="\ufeff" + body,
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@router.get("/{pid}/calibration/export")
+def export_csv(pid: str, what: str = "params", rid: str = ""):
+    """导出 CSV（P5）。
+
+    - ``what=params``：参数长表 ``unit_code,param,value``。有 ``rid`` 取该次率定的
+      final_params，否则取当前项目参数集（default.json）。表可直接回导入（前端
+      「导入参数 CSV」→ apply），也可作为其他模型的输入表；
+    - ``what=flow``：各站出口的全分辨率过程线 ``time,<unit>_obs,<unit>_sim,...``。
+      有 ``rid`` 用该次最终参数整体复算（含其模拟时段），否则用当前参数集全时段模拟。
+    """
+    get_project_or_404(pid)
+    sub = _require_subbasins(pid)
+    sbs = sorted(sub.get("subbasins", []), key=lambda s: (s.get("order_index") or 0))
+
+    result_doc = st.read_json_file(st.cal_run_dir(pid, rid) / "result.json") if rid else None
+    if rid and not result_doc:
+        raise HTTPException(404, f"任务 {rid} 的结果尚未生成")
+
+    if what == "params":
+        params = (result_doc or {}).get("final_params") if result_doc else None
+        if params is None:
+            params = _read_default_params(pid) or {}
+        lines = ["unit_code,param,value"]
+        for sb in sbs:
+            code = sb["code"]
+            prm = params.get(code) or {}
+            for k in PARAM_KEYS:
+                if k in prm:
+                    lines.append(f"{code},{k},{float(prm[k]):.6g}")
+        tag = rid or "current"
+        return _csv_response("\n".join(lines) + "\n", f"params_{tag}.csv")
+
+    if what == "flow":
+        params = (result_doc or {}).get("final_params") if result_doc else None
+        if params is None:
+            params = _read_default_params(pid) or {}
+        period = ((result_doc or {}).get("config") or {}).get("period") if result_doc else None
+        sim = simulate_basin(sub, st.read_ts_manifest(pid), series_loader(pid),
+                             params=params or None, period=period, return_raw=True)
+        if not sim.get("ok"):
+            raise HTTPException(400, sim.get("error") or "复算失败")
+        raw = sim["_raw"]
+        times = raw["times"]
+        header = ["time"]
+        cols: list[list] = []
+        for u in raw["units"]:
+            code = u["code"]
+            obs = u.get("obs")
+            header += [f"{code}_obs", f"{code}_sim"]
+            cols.append([
+                (f"{float(v):.4f}" if v is not None and np.isfinite(v) else "")
+                for v in (obs if obs is not None else [None] * len(times))
+            ])
+            cols.append([f"{float(v):.4f}" for v in u["q"]])
+        lines = [",".join(header)]
+        for i, t in enumerate(times):
+            lines.append(t + "," + ",".join(c[i] if i < len(c) else "" for c in cols))
+        tag = rid or "current"
+        return _csv_response("\n".join(lines) + "\n", f"flow_{tag}.csv")
+
+    raise HTTPException(400, f"不支持的导出类型: {what}（可选 params / flow）")

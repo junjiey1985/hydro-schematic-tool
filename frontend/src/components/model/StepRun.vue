@@ -17,7 +17,9 @@
         <div class="card">
           <div class="ck">当前单元</div>
           <div class="cv">{{ cur.unit || '—' }}</div>
-          <div class="cs">{{ doneList.length }} / {{ plan.length }} 单元已完成</div>
+          <div class="cs">
+            {{ isJoint ? `联合优化 ${plan.length} 个单元` : `${doneList.length} / ${plan.length} 单元已完成` }}
+          </div>
         </div>
         <div class="card">
           <div class="ck">代数 / 评估次数</div>
@@ -152,6 +154,7 @@ const runs = computed(() => state.calib.runs || [])
 const result = computed(() => state.calib.result || null)
 const convCurve = computed(() => (state.calib.convergence && state.calib.convergence.curve) || [])
 const error = computed(() => state.calib.error || cur.value.error || '')
+const isJoint = computed(() => cur.value.unit === 'JOINT')
 
 // ---------------------------------------------------------------- 状态判定
 const running = computed(() => {
@@ -207,11 +210,16 @@ const doneList = computed(() => {
 })
 
 function unitState(c) {
+  if (isJoint.value) {
+    if (running.value) return 'on'
+    return finished.value ? 'done' : 'idle'
+  }
   if (doneList.value.includes(c)) return 'done'
   if (running.value && cur.value.unit === c) return 'on'
   return 'idle'
 }
 function unitLabel(c) {
+  if (isJoint.value) return running.value ? '联合优化中' : finished.value ? '已优化' : '待运行'
   const s = unitState(c)
   return s === 'done' ? '完成' : s === 'on' ? '进行中' : '待运行'
 }

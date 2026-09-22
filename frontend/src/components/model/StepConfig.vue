@@ -19,6 +19,10 @@
               锁定
               <div class="th-sub">固定不率定</div>
             </th>
+            <th style="width: 76px">
+              共享
+              <div class="th-sub">联合模式生效</div>
+            </th>
             <th v-for="u in units" :key="u.code" class="num" style="width: 92px">
               <span class="dot" :style="{ background: colorOf(u.code) }"></span>{{ u.code }}
             </th>
@@ -33,6 +37,14 @@
             </td>
             <td class="num">
               <input type="checkbox" :checked="!!locked[p.key]" @change="toggleLock(p.key)" />
+            </td>
+            <td class="num" :title="form.mode === 'joint' ? '勾选后各单元共用一个参数值参与率定' : '仅联合模式生效'">
+              <input
+                type="checkbox"
+                :checked="!!shared[p.key]"
+                :disabled="form.mode !== 'joint'"
+                @change="toggleShare(p.key)"
+              />
             </td>
             <td v-for="u in units" :key="u.code" class="num">
               <input
@@ -89,6 +101,14 @@
     <!-- 率定设置 -->
     <div class="sub-sec">③ 率定设置</div>
     <div class="row">
+      <label>率定模式</label>
+      <span class="seg">
+        <button :class="{ on: form.mode === 'chain' }" @click="form.mode = 'chain'">链式</button>
+        <button :class="{ on: form.mode === 'joint' }" @click="form.mode = 'joint'">联合</button>
+      </span>
+      <span class="muted">{{ modeHint }}</span>
+    </div>
+    <div class="row" style="margin-top: 6px">
       <label>率定期占比</label>
       <input v-model.number="form.split" type="number" min="0.3" max="0.95" step="0.05" class="num-in" />
       <span class="muted">其余为验证期（只评估不调参）</span>
@@ -109,7 +129,16 @@
       </button>
     </div>
     <div class="note">
-      SCE-UA 链式率定：按排水序自上而下逐单元优化。单次目标评估约 4.6 ms，
+      <template v-if="form.mode === 'chain'">
+        SCE-UA 链式率定：按排水序自上而下逐单元优化，上游出流演算后作已知入流。
+      </template>
+      <template v-else>
+        SCE-UA 联合率定：所有有实测的站同时优化，目标 = 各站目标函数加权平均；
+        勾「共享」的参数各单元共用一个值。维度高、种群大，
+        <b>建议最大评估 ≥ {{ jointSuggest }}</b
+        >（当前 {{ form.maxEvals || 0 }}）。
+      </template>
+      单次目标评估约 {{ form.mode === 'joint' ? jointMsPer : '4.6 ms' }}，
       <b>{{ evalHint }}</b
       >。目标函数 F = (1−NSE) + 0.3·|PBIAS|/100 + 0.1·RMSE/std(obs)，在率定期上计算。
     </div>
@@ -145,9 +174,10 @@ import {
 
 const emit = defineEmits(['goto', 'started'])
 
-const form = reactive({ start: '', end: '', warmup: 0, split: 0.7, maxEvals: 3000, seed: 7 })
+const form = reactive({ mode: 'chain', start: '', end: '', warmup: 0, split: 0.7, maxEvals: 3000, seed: 7 })
 const edited = reactive({})
 const locked = reactive({})
+const shared = reactive({})
 
 const cal = computed(() => state.calibration)
 const units = computed(() => (cal.value && cal.value.units) || [])
@@ -162,12 +192,43 @@ const paramRows = computed(() => {
 
 const lockedCount = computed(() => Object.keys(locked).filter((k) => locked[k]).length)
 const allLocked = computed(() => paramRows.value.length > 0 && lockedCount.value >= paramRows.value.length)
+function toggleShare(key) {
+  shared[key] = !shared[key]
+}
+
+// ---------------- 联合模式的维度与耗时估计
+/** 各单元自由参数数（XE 仅在有上游来流的单元开放；params 接口未带 upstream，按排水序近似）。 */
+function freeKeysOf(u) {
+  const keys = paramRows.value.map((p) => p.key).filter((k) => k !== 'XE')
+  if ((u.order_index || 1) > 1) keys.push('XE')
+  return keys.filter((k) => !locked[k])
+}
+/** 联合决策维度：Σ单元自由参数 − Σ共享合并（近似：XE 归属按 upstream 判断）。 */
+const jointDims = computed(() => {
+  let n = 0
+  for (const u of units.value) n += freeKeysOf(u).length
+  for (const key of Object.keys(shared)) {
+    if (!shared[key] || key === 'XE') continue
+    n -= Math.max(0, units.value.length - 1)
+  }
+  return Math.max(1, n)
+})
+const jointSuggest = computed(() => {
+  const p = jointDims.value
+  return 3 * p * (2 * p + 1)
+})
+const jointMsPer = computed(() => `${Math.max(1, Math.round(units.value.length * 5))} ms`)
+const modeHint = computed(() =>
+  form.mode === 'joint' ? `全站同时优化 · 约 ${jointDims.value} 维` : '自上而下逐单元优化'
+)
 
 const evalHint = computed(() => {
   const n = Math.max(1, Math.round(form.maxEvals || 0))
   const per = units.value.length
-  const sec = (n * per * 0.0046).toFixed(0)
-  return `${n} 次评估 × ${per} 个单元 ≈ ${sec} 秒`
+  const sec = (n * per * 0.005).toFixed(0)
+  return form.mode === 'joint'
+    ? `${n} 次联合评估 × 每轮演算 ${per} 单元 ≈ ${sec} 秒`
+    : `${n} 次评估 × ${per} 个单元 ≈ ${sec} 秒`
 })
 
 const simMeta = computed(() => {
@@ -273,14 +334,24 @@ async function doCalibrate() {
       lock[u.code][key] = edited[u.code][key]
     }
   }
+  const payload = {
+    mode: form.mode,
+    period: periodOf(),
+    split: Number(form.split) || 0.7,
+    max_evals: Number(form.maxEvals) || 3000,
+    seed: Number(form.seed) || 0,
+    lock
+  }
+  if (form.mode === 'joint') {
+    const codes = units.value.map((u) => u.code)
+    const share = {}
+    for (const key of Object.keys(shared)) {
+      if (shared[key]) share[key] = [...codes]
+    }
+    payload.share = share
+  }
   try {
-    await startCalibration({
-      period: periodOf(),
-      split: Number(form.split) || 0.7,
-      max_evals: Number(form.maxEvals) || 3000,
-      seed: Number(form.seed) || 0,
-      lock
-    })
+    await startCalibration(payload)
     await loadCalibrationRuns()
     emit('started')
     emit('goto', 'run', {})
@@ -370,6 +441,25 @@ defineExpose({ reload, ensurePeriod: async () => loadTimeseries(false) })
 }
 .num-in.wide {
   width: 92px;
+}
+.seg {
+  display: inline-flex;
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  overflow: hidden;
+}
+.seg button {
+  border: none;
+  border-radius: 0;
+  padding: 4px 12px;
+  font-size: 12px;
+  background: #fff;
+  color: var(--text-3);
+}
+.seg button.on {
+  background: var(--primary-soft);
+  color: var(--primary);
+  font-weight: 600;
 }
 tr.locked td {
   background: #fbfaf5;
