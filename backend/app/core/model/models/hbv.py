@@ -20,13 +20,14 @@
 土壤湿度带与响应函数与降雨版相同（输入换成 rain + 融雪水出流）::
 
     土壤：E_act = CET·E0·min(1, SM/(FC·LP))；recharge = in·(SM/FC)^BETA
+          （显式欧拉下 SM 候选值越过 FC 的部分即刻下渗、计入补给，严禁截断丢弃）
     响应：SUZ（Q0/K0 阈值出流 + PERC 下渗 + Q1/K1）、SLZ（Q2/K2）
     汇流：MAXBAS 三角单位线
 
 水量平衡恒等式：``ΣP = ΣE + Σq + ΔS``，
 其中 S = 雪当量 SP + 融雪持水 SWC + 土壤 SM + 两层响应箱 SUZ/SLZ + 单位线在途蓄量；
 启用雪模块时 ``P`` 为**经 SFCF 校正后的模型输入**（固态 × SFCF + 液态原值）。
-单位线用累积曲线差分实现并显式记账在途蓄量，恒等式严格闭合。
+单位线用累积曲线差分实现并显式记账在途蓄量，土壤带超容下渗显式入账，恒等式严格闭合。
 """
 from __future__ import annotations
 
@@ -146,7 +147,14 @@ def simulate_unit(
             recharge = water_in * min(1.0, st.SM / fc) ** beta
         else:
             recharge = 0.0
-        st.SM = max(0.0, min(fc, st.SM + water_in - recharge - e_act))
+        # 显式欧拉下 recharge 用的是**步初** SM，SM 可能越过 FC（SM 略低于 FC 时来一场大
+        # 降水，按旧 SM 算出的补给偏少 → 候选值超容）。超容的水不能凭空丢弃——那会破坏
+        # 水量平衡恒等式（曾在大 BETA 参数下每个时段漏 1~4 mm，1095 时段累计 7.1 mm）。
+        # 按物理含义处理：超出田间持水量的部分即刻下渗，计入本步补给（→ 响应箱 → 出流）；
+        # 若候选值为负（防御性分支）则从补给中回补，两侧都严格守恒。
+        sm_cand = st.SM + water_in - recharge - e_act
+        st.SM = min(fc, max(0.0, sm_cand))
+        recharge += sm_cand - st.SM
 
         # ---- 响应函数：两个蓄水箱
         st.SUZ += recharge

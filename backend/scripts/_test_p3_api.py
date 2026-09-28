@@ -31,6 +31,15 @@ def check(name, cond, detail=""):
     print(f"  [{'PASS' if cond else 'FAIL'}] {name} {detail}")
 
 
+# P10 起模型可插拔：参数名/个数随模型而变（新安江 K/B/...、HBV TT/CFMAX/...），
+# 因此先问接口拿当前模型与参数体系，不要硬编码。
+_s, _pm = call("GET", f"/api/projects/{PID}/calibration/params")
+MODEL = (_pm or {}).get("model") or "xaj"
+SPEC_KEYS = list(((_pm or {}).get("spec") or {}).keys())
+PROBE_KEY = next((k for k in SPEC_KEYS if k != "XE"), "K")
+print(f"当前模型：{MODEL}｜参数体系：{SPEC_KEYS}｜抽查键：{PROBE_KEY}")
+
+
 print("=" * 76)
 print("① 启动率定任务")
 st, r = call("POST", f"/api/projects/{PID}/calibration/run",
@@ -104,8 +113,12 @@ s, a = call("POST", f"/api/projects/{PID}/calibration/apply", {"run_id": rid})
 check("HTTP 200", s == 200, f"(实际 {s})")
 if s == 200:
     saved = {u["code"]: u["params"] for u in a.get("units") or []}
-    print("   已保存参数:", {k: {kk: round(vv, 3) for kk, vv in v.items() if kk in ("K", "B", "XE")} for k, v in saved.items()})
-    check("与结果一致", abs(saved.get("S01", {}).get("K", 0) - res["final_params"]["S01"]["K"]) < 1e-9)
+    show = [PROBE_KEY, "XE", "KE"]
+    print("   已保存参数:", {k: {kk: round(vv, 3) for kk, vv in v.items() if kk in show}
+                            for k, v in saved.items()})
+    check(f"与结果一致（抽查 {PROBE_KEY}）",
+          abs(saved.get("S01", {}).get(PROBE_KEY, 0)
+              - res["final_params"]["S01"][PROBE_KEY]) < 1e-9)
 s, pr = call("GET", f"/api/projects/{PID}/calibration/params")
 check("has_saved=True", pr.get("has_saved") is True)
 s, sm = call("POST", f"/api/projects/{PID}/calibration/simulate", {})

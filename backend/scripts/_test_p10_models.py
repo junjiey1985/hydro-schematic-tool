@@ -108,6 +108,45 @@ for k in MODELS:
             worst = max(worst, abs(r["balance"]["closure"]))
     check(f"B1 {k}: 闭合误差 ≤1e-9 mm", worst <= 1e-9, f"max|closure|={worst:.3e}")
 
+# B2 对抗性：参数盒内随机采样 + 边界组合，下强降雨，必须机器精度闭合。
+# 真值参数落在区间中部、往往永远不触发饱和分支，只扫边界也不够——触发条件常在**内部**
+# （HBV 实测：FC≈236/LP≈0.66/BETA≈5.26 这种内部组合才让土壤带候选值越过 FC）。
+# 所以这里主用区间内均匀随机采样，配强降雨序列，把"截断丢弃型"漏失逼出来。
+# （旧 HBV 土壤带用 min(FC, …) 硬截断：200 组内部随机参数里 15 组出现丢弃，最大 95 mm。）
+print("-" * 78)
+print("B2 参数盒随机采样 + 强降雨下的水量平衡（对抗性）")
+rng2 = np.random.default_rng(20260928)
+N_CASE = 60
+for k in MODELS:
+    pk_spec = get_model(k).params
+    cases: list[tuple[str, dict]] = []
+    # ① 每个参数单独推到 min / max，以及全 min / 全 max
+    for pk, pv in pk_spec.items():
+        for edge in ("min", "max"):
+            prm = dict(truth_params(k))
+            prm[pk] = float(pv[edge])
+            cases.append((f"{pk}={edge}", prm))
+    cases.append(("all-max", {pk: float(pv["max"]) for pk, pv in pk_spec.items()}))
+    cases.append(("all-min", {pk: float(pv["min"]) for pk, pv in pk_spec.items()}))
+    # ② 区间内均匀随机采样（主力）
+    for _ in range(N_CASE):
+        cases.append(
+            ("box-random", {pk: float(rng2.uniform(pv["min"], pv["max"])) for pk, pv in pk_spec.items()})
+        )
+    n = 400
+    pp = np.round(rng2.gamma(0.7, 9.0, n), 3)   # 偏重强降雨，易触发蓄满/超容分支
+    ee = np.round(rng2.uniform(0.2, 5.0, n), 3)
+    worst2, worst_case = 0.0, ""
+    for tag, prm in cases:
+        c = abs(get_model(k).simulate(pp, ee, prm, dt_days=1.0)["balance"]["closure"])
+        if c > worst2:
+            worst2, worst_case = c, tag
+    check(
+        f"B2 {k}: 随机/边界参数闭合 ≤1e-9 mm",
+        worst2 <= 1e-9,
+        f"worst={worst2:.3e} @{worst_case} ({len(cases)} 组 = 边界{len(cases)-N_CASE} + 随机{N_CASE})",
+    )
+
 print("=" * 78)
 print("C. 全流域 simulate_basin（真实项目）")
 sim_store = {}
