@@ -27,6 +27,12 @@ export const state = reactive({
     runs: [],               // 历次任务列表
     error: '',              // 任务级错误
     fcResult: null,         // 情景预报结果（P6）
+    cmp: {                  // 多模型对比（P12）
+      cid: '',
+      doc: null,            // 当前/最近一次对比任务进度+结果
+      runs: [],             // 历次对比列表
+      poll: 0
+    },
     poll: 0                 // 轮询定时器 id
   },
   tab: 'map',
@@ -595,6 +601,74 @@ export async function setModel(model) {
     )
     return r
   })
+}
+
+// ---------------------------------------------------------------- 多模型对比（P12）
+export async function loadCompareRuns(force = false) {
+  if (!projectId.value) return []
+  if (!force && state.calib.cmp.runs.length) return state.calib.cmp.runs
+  state.calib.cmp.runs = await api
+    .calibrationCompareList(projectId.value)
+    .then((r) => r.runs || [])
+    .catch(() => state.calib.cmp.runs)
+  return state.calib.cmp.runs
+}
+
+export function stopComparePolling() {
+  if (state.calib.cmp.poll) {
+    clearInterval(state.calib.cmp.poll)
+    state.calib.cmp.poll = 0
+  }
+}
+
+/** 轮询一次对比任务；结束后停止轮询并刷新历次列表。 */
+export async function pollCompare() {
+  const cid = state.calib.cmp.cid
+  if (!cid || !projectId.value) return null
+  try {
+    const doc = await api.calibrationCompareDoc(projectId.value, cid)
+    state.calib.cmp.doc = doc
+    if (doc.status && !['running', 'queued'].includes(doc.status)) {
+      stopComparePolling()
+      await loadCompareRuns(true)
+    }
+    return doc
+  } catch (e) {
+    stopComparePolling()
+    toast(e.message || '对比任务查询失败', 'warn')
+    return null
+  }
+}
+
+/** 启动多模型对比（后台逐模型链式率定）。 */
+export async function startCompare(payload = {}) {
+  stopComparePolling()
+  const r = await api.calibrationCompareStart(projectId.value, payload)
+  state.calib.cmp.cid = r.cid
+  state.calib.cmp.doc = null
+  state.calib.cmp.poll = setInterval(() => pollCompare(), 2000)
+  await pollCompare()
+  return r.cid
+}
+
+/** 终止对比任务（当前模型的当前代结束后退出，已完成模型结果保留）。 */
+export async function stopCompare() {
+  const cid = state.calib.cmp.cid
+  if (!cid) return null
+  const r = await api.calibrationCompareStop(projectId.value, cid).catch((e) => {
+    toast(e.message || '终止失败', 'warn')
+    return null
+  })
+  if (r) toast('已请求终止，等待当前模型率定结束', 'info')
+  await pollCompare()
+  return r
+}
+
+/** 打开一次历史对比任务（运行中的会自动续上轮询）。 */
+export async function openCompare(cid) {
+  stopComparePolling()
+  state.calib.cmp.cid = cid
+  return pollCompare()
 }
 
 /** 保存参数集为项目默认；传 reset=true 恢复默认参数。 */

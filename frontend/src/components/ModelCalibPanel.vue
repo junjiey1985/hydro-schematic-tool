@@ -30,7 +30,8 @@
           <StepConfig v-else-if="tab === 'config'" ref="cfgRef" @goto="go" @started="tab = 'run'" />
           <StepRun v-else-if="tab === 'run'" @goto="go" />
           <StepResult v-else-if="tab === 'result'" :view="resultView" @goto="go" />
-          <StepForecast v-else />
+          <StepForecast v-else-if="tab === 'forecast'" />
+          <StepCompare v-else />
         </template>
       </div>
 
@@ -57,6 +58,7 @@ import StepConfig from './model/StepConfig.vue'
 import StepRun from './model/StepRun.vue'
 import StepResult from './model/StepResult.vue'
 import StepForecast from './model/StepForecast.vue'
+import StepCompare from './model/StepCompare.vue'
 import {
   currentModel,
   loadCalibrationParams,
@@ -82,6 +84,11 @@ const cfgRef = ref(null)
 const running = computed(() => {
   const st = state.calib.status
   return !!(st && st.status === 'running' && st.phase !== 'finished')
+})
+
+const cmpRunning = computed(() => {
+  const s = state.calib.cmp && state.calib.cmp.doc && state.calib.cmp.doc.status
+  return s === 'running' || s === 'queued'
 })
 
 const cov = computed(() => {
@@ -120,6 +127,13 @@ const tabs = computed(() => [
     label: '预报',
     badge: !!state.fcResult,
     badgeClass: state.fcResult ? 'ok' : 'idle'
+  },
+  {
+    key: 'compare',
+    no: '⑥',
+    label: '对比',
+    badge: cmpRunning.value,
+    badgeClass: cmpRunning.value ? 'pulse' : 'idle'
   }
 ])
 

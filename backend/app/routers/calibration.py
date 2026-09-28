@@ -532,6 +532,10 @@ def start_run(pid: str, payload: dict | None = None):
         for rid, e in _RUNS.items():
             if e.get("pid") == pid and e.get("thread") and e["thread"].is_alive():
                 raise HTTPException(409, f"该项目已有率定任务在运行（{rid}），请先等待完成或终止")
+    with _COMPARE_LOCK:
+        for cid, e in _COMPARE.items():
+            if e.get("pid") == pid and e.get("thread") and e["thread"].is_alive():
+                raise HTTPException(409, f"该项目有多模型对比任务在运行（{cid}），请先等待完成或终止")
     payload = payload or {}
     mode = str(payload.get("mode") or "chain").strip().lower()
     if mode not in ("chain", "joint"):
@@ -599,6 +603,228 @@ def list_runs(pid: str):
                 }
             )
     return {"ok": True, "runs": out}
+
+
+# ================================================================ P12 多模型对比
+# 内存态：cid -> {pid, thread, stop}；进度与结果同落一个 <cid>.json
+_COMPARE: dict[str, dict] = {}
+_COMPARE_LOCK = threading.Lock()
+
+
+def _compare_doc(pid: str, cid: str) -> dict:
+    return st.read_json_file(st.compare_doc_path(pid, cid)) or {}
+
+
+def _write_compare_doc(pid: str, cid: str, doc: dict) -> None:
+    st.write_json_file(st.compare_doc_path(pid, cid), doc)
+
+
+def _nse_range(metrics: list[dict], split_key: str) -> list[float | None]:
+    vals = [((m.get(split_key) or {}).get("nse")) for m in metrics or []]
+    vals = [v for v in vals if v is not None]
+    return [min(vals), max(vals)] if vals else [None, None]
+
+
+def _compare_worker(pid: str, cid: str, cfg: dict, sub: dict, stop_event: threading.Event):
+    started = time.time()
+    doc = _compare_doc(pid, cid)
+    doc.update({"status": "running", "started_at": st.now_iso()})
+
+    def stop_flag():
+        return bool(stop_event and stop_event.is_set())
+
+    try:
+        for mk in cfg["models"]:
+            mdoc = doc["models"][mk]
+            if stop_flag():
+                mdoc["status"] = "not_run"
+                continue
+            mdoc.update({"status": "running", "progress": {"unit": None, "gen": 0, "evals": 0}})
+
+            def on_progress(payload: dict, _mk=mk):
+                p = doc["models"][_mk].get("progress") or {}
+                p.update({k: payload.get(k) for k in ("unit", "gen", "evals") if k in payload})
+                doc["models"][_mk]["progress"] = p
+                doc["elapsed_s"] = round(time.time() - started, 1)
+                _write_compare_doc(pid, cid, doc)
+
+            t0 = time.time()
+            try:
+                res = run_calibration(
+                    sub, st.read_ts_manifest(pid), series_loader(pid),
+                    config={**{k: v for k, v in cfg.items() if k != "models"}, "model": mk},
+                    on_progress=on_progress, stop_flag=stop_flag,
+                )
+            except Exception as e:  # noqa: BLE001 —— 单模型失败不拖垮整个对比
+                import traceback
+                if stop_flag():
+                    mdoc.update({"status": "stopped", "elapsed_s": round(time.time() - t0, 1),
+                                 "progress": None})
+                else:
+                    mdoc.update({"status": "failed", "elapsed_s": round(time.time() - t0, 1),
+                                 "error": f"{type(e).__name__}: {e}",
+                                 "traceback": traceback.format_exc()[-800:], "progress": None})
+                continue
+            mdoc["elapsed_s"] = round(time.time() - t0, 1)
+            mdoc["progress"] = None
+            if not res.get("ok"):
+                # 用户终止导致的提前结束不算失败（run_calibration 以 ok=False + "开始前被终止"表达）
+                if stop_flag() or res.get("status") == "stopped":
+                    mdoc["status"] = "stopped"
+                else:
+                    mdoc.update({"status": "failed", "error": res.get("error") or "率定失败"})
+                continue
+            mdoc.update({
+                "status": "stopped" if res.get("status") == "stopped" else "done",
+                "metrics": res.get("metrics") or [],
+                "final_params": res.get("final_params") or {},
+                "calib_nse_range": _nse_range(res.get("metrics"), "calib"),
+                "valid_nse_range": _nse_range(res.get("metrics"), "valid"),
+                "warnings": res.get("warnings") or [],
+            })
+            _write_compare_doc(pid, cid, doc)
+
+        statuses = [m["status"] for m in doc["models"].values()]
+        doc["status"] = "stopped" if "stopped" in statuses or stop_flag() else (
+            "failed" if all(s in ("failed", "not_run") for s in statuses) else "done")
+        doc["finished_at"] = st.now_iso()
+        doc["elapsed_s"] = round(time.time() - started, 1)
+        _write_compare_doc(pid, cid, doc)
+        st.touch_project(pid)
+    except Exception as e:  # noqa: BLE001 —— 后台线程兜底
+        import traceback
+        doc.update({"status": "failed", "error": f"{type(e).__name__}: {e}",
+                    "traceback": traceback.format_exc()[-1200:],
+                    "finished_at": st.now_iso(), "elapsed_s": round(time.time() - started, 1)})
+        _write_compare_doc(pid, cid, doc)
+
+
+@router.post("/{pid}/calibration/compare")
+def start_compare(pid: str, payload: dict | None = None):
+    """启动多模型对比（后台线程，逐模型链式率定），返回 cid。
+
+    body: {models?: ["xaj",...], max_evals?: 400, split?: 0.7, seed?, period?}
+    各模型用相同预算/分期/随机种子，互相独立率定，参数不跨模型。
+    """
+    get_project_or_404(pid)
+    sub = _check_runnable(pid)
+    with _COMPARE_LOCK:
+        for cid, e in _COMPARE.items():
+            if e.get("pid") == pid and e.get("thread") and e["thread"].is_alive():
+                raise HTTPException(409, f"该项目已有对比任务在运行（{cid}），请等待完成或终止")
+    with _RUNS_LOCK:
+        for rid, e in _RUNS.items():
+            if e.get("pid") == pid and e.get("thread") and e["thread"].is_alive():
+                raise HTTPException(409, f"该项目已有率定任务在运行（{rid}），请先等待完成或终止")
+    payload = payload or {}
+    valid = {m["key"] for m in list_model_info()}
+    models = [str(k).strip().lower() for k in (payload.get("models") or valid)]
+    models = [k for i, k in enumerate(models) if k in valid and k not in models[:i]]
+    if len(models) < 2:
+        raise HTTPException(400, "对比至少需要 2 个有效模型")
+    cfg = {
+        "models": models,
+        "max_evals": min(max(int(payload.get("max_evals") or 400), 60), 5000),
+        "split": min(max(float(payload.get("split") or 0.7), 0.3), 0.95),
+        "seed": int(payload.get("seed") or 0),
+        "period": payload.get("period") or None,
+    }
+    cid = uuid.uuid4().hex[:10]
+    doc = {
+        "ok": True, "cid": cid, "pid": pid, "status": "queued",
+        "created_at": st.now_iso(), "config": cfg,
+        "models": {mk: {"key": mk, "name": get_model(mk).name, "status": "pending",
+                        "elapsed_s": None, "metrics": [], "final_params": {},
+                        "calib_nse_range": [None, None], "valid_nse_range": [None, None],
+                        "error": None}
+                   for mk in models},
+        "error": None,
+    }
+    _write_compare_doc(pid, cid, doc)
+    stop_event = threading.Event()
+    th = threading.Thread(target=_compare_worker, args=(pid, cid, cfg, sub, stop_event),
+                          daemon=True, name=f"cmp-{cid}")
+    with _COMPARE_LOCK:
+        _COMPARE[cid] = {"pid": pid, "thread": th, "stop": stop_event}
+    th.start()
+    return {"ok": True, "cid": cid, "config": cfg}
+
+
+@router.get("/{pid}/calibration/compare")
+def list_compare(pid: str):
+    """历次对比任务（新→旧）。"""
+    get_project_or_404(pid)
+    cdir = st.compare_dir(pid)
+    out = []
+    if cdir.exists():
+        def _key(p):
+            doc = st.read_json_file(p) or {}
+            return doc.get("created_at") or ""
+        for p in sorted(cdir.glob("*.json"), key=_key, reverse=True):
+            doc = st.read_json_file(p) or {}
+            out.append({
+                "cid": doc.get("cid") or p.stem, "status": doc.get("status"),
+                "created_at": doc.get("created_at"), "finished_at": doc.get("finished_at"),
+                "elapsed_s": doc.get("elapsed_s"), "config": doc.get("config") or {},
+                "models": {k: v.get("status") for k, v in (doc.get("models") or {}).items()},
+            })
+    return {"ok": True, "runs": out}
+
+
+@router.get("/{pid}/calibration/compare/{cid}")
+def get_compare(pid: str, cid: str):
+    """对比任务进度/结果（运行中轮询、结束后读取同一接口）。"""
+    get_project_or_404(pid)
+    doc = _compare_doc(pid, cid)
+    if not doc:
+        raise HTTPException(404, f"对比任务 {cid} 不存在")
+    with _COMPARE_LOCK:
+        e = _COMPARE.get(cid)
+        alive = bool(e and e.get("thread") and e["thread"].is_alive())
+    if doc.get("status") in ("running", "queued") and not alive:
+        doc["status"] = "failed"
+        doc["error"] = doc.get("error") or "服务重启导致任务中断"
+        _write_compare_doc(pid, cid, doc)
+    return doc
+
+
+@router.post("/{pid}/calibration/compare/{cid}/stop")
+def stop_compare(pid: str, cid: str):
+    get_project_or_404(pid)
+    doc = _compare_doc(pid, cid)
+    if not doc:
+        raise HTTPException(404, f"对比任务 {cid} 不存在")
+    with _COMPARE_LOCK:
+        e = _COMPARE.get(cid)
+        if not e or not e.get("thread") or not e["thread"].is_alive():
+            raise HTTPException(409, "任务已结束，无需终止")
+        e["stop"].set()
+    return {"ok": True, "cid": cid, "stopping": True}
+
+
+@router.get("/{pid}/calibration/compare/{cid}/export")
+def export_compare(pid: str, cid: str, what: str = "metrics"):
+    """对比结果导出 CSV：what=metrics（长表 model,unit,split,metric,value）。"""
+    get_project_or_404(pid)
+    sbs = sorted(st.read_subbasins(pid).get("subbasins", []),
+                 key=lambda s: (s.get("order_index") or 0))
+    _ = sbs
+    doc = _compare_doc(pid, cid)
+    if not doc:
+        raise HTTPException(404, f"对比任务 {cid} 不存在")
+    if doc.get("status") in ("running", "queued"):
+        raise HTTPException(409, "任务尚未结束，稍后再导出")
+    if what != "metrics":
+        raise HTTPException(400, "不支持的导出类型")
+    lines = ["model,unit,split,metric,value"]
+    for mk, mdoc in (doc.get("models") or {}).items():
+        for m in mdoc.get("metrics") or []:
+            for split in ("calib", "valid"):
+                mm = m.get(split) or {}
+                for k in ("nse", "r2", "kge", "rmse", "pbias"):
+                    if mm.get(k) is not None:
+                        lines.append(f"{mk},{m.get('code')},{split},{k},{float(mm[k]):.6g}")
+    return _csv_response("\n".join(lines) + "\n", f"compare_{cid}.csv")
 
 
 def _get_run_entry(pid: str, rid: str) -> dict:

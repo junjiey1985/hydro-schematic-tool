@@ -382,6 +382,16 @@ def cal_run_dir(pid: str, rid: str) -> Path:
     return cal_runs_dir(pid) / safe
 
 
+def compare_dir(pid: str) -> Path:
+    """多模型对比任务目录（P12）：每个任务一个 <cid>.json（进度与结果同文件）。"""
+    return project_dir(pid) / "calibration" / "compare"
+
+
+def compare_doc_path(pid: str, cid: str) -> Path:
+    safe = "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in str(cid)) or "cmp"
+    return compare_dir(pid) / f"{safe}.json"
+
+
 def calibration_set_path(pid: str) -> Path:
     """项目参数集文件（同时记录所选的产汇流模型）。"""
     return project_dir(pid) / "calibration" / "default.json"

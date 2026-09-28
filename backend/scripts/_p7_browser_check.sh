@@ -67,13 +67,20 @@ chk "阈值输入" "阈值 NSE" debug_shots/snap7_1.txt
 shot p7_01_glue_form
 
 echo
-echo "############ [3] 运行 GLUE 分析（500 样本 ≈ 8s） ############"
+echo "############ [3] 运行 GLUE 分析（500 样本，HBV 雪版 ≈ 15s） ############"
+# 注意：GLUE 为同步接口，耗时随当前模型变化（新安江 ≈8s / HBV 雪版 ≈15s）→ 必须轮询等结果，勿写死 sleep
 ab scrollintoview "#glue-run"
 sleep 1
 ab click "#glue-run"
 echo "  已点击「运行 GLUE 分析」"
-sleep 15
-agent-browser snapshot > debug_shots/snap7_3.txt 2>&1
+for i in $(seq 1 16); do
+  sleep 5
+  agent-browser snapshot > debug_shots/snap7_3.txt 2>&1
+  if grep -q "行为参数后验范围" debug_shots/snap7_3.txt; then
+    echo "  第 $((i*5))s：GLUE 分析已出结果"
+    break
+  fi
+done
 chk "行为参数后验范围表" "行为参数后验范围" debug_shots/snap7_3.txt
 chk "置信带图例（note）" "90% 置信区间" debug_shots/snap7_3.txt
 chk "q50 说明（note）" "50% 分位（中心趋势）" debug_shots/snap7_3.txt

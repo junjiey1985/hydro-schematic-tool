@@ -136,6 +136,16 @@ export const api = {
   calibrationForecast: (pid, payload = {}) =>
     request(`/api/projects/${pid}/calibration/forecast`, { method: 'POST', body: payload }),
 
+  // ---------------- 多模型对比（P12）
+  calibrationCompareStart: (pid, payload = {}) =>
+    request(`/api/projects/${pid}/calibration/compare`, { method: 'POST', body: payload }),
+  calibrationCompareDoc: (pid, cid) => request(`/api/projects/${pid}/calibration/compare/${cid}`),
+  calibrationCompareList: (pid) => request(`/api/projects/${pid}/calibration/compare`),
+  calibrationCompareStop: (pid, cid) =>
+    request(`/api/projects/${pid}/calibration/compare/${cid}/stop`, { method: 'POST' }),
+  calibrationCompareExportUrl: (pid, cid) =>
+    `/api/projects/${pid}/calibration/compare/${cid}/export?what=metrics`,
+
   // ---------------- GLUE 不确定性（P7）
   calibrationGlue: (pid, payload = {}) =>
     request(`/api/projects/${pid}/calibration/glue`, { method: 'POST', body: payload })
