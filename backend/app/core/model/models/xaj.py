@@ -139,6 +139,7 @@ def simulate_unit(
     params: dict,
     state: UnitState | None = None,
     dt_days: float = 1.0,
+    t: "np.ndarray | None" = None,  # 气温序列（可选；本模型不用，仅为统一契约保留）
 ) -> dict:
     """单单元逐时段产汇流。
 

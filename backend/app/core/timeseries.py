@@ -26,11 +26,11 @@ from datetime import datetime, timedelta
 from typing import Any, Iterable, Optional
 
 # ---------------------------------------------------------------- 常量
-KINDS = ("rain", "flow", "evap")
-KIND_LABELS = {"rain": "降雨", "flow": "流量", "evap": "蒸发能力"}
+KINDS = ("rain", "flow", "evap", "temp")
+KIND_LABELS = {"rain": "降雨", "flow": "流量", "evap": "蒸发能力", "temp": "气温"}
 
-# 观测口径：降雨为累计值、流量与蒸发为瞬时/日均值（重采样时的聚合方式）
-KIND_AGG = {"rain": "sum", "flow": "mean", "evap": "mean"}
+# 观测口径：降雨为累计值、流量/蒸发/气温为瞬时/日均值（重采样时的聚合方式）
+KIND_AGG = {"rain": "sum", "flow": "mean", "evap": "mean", "temp": "mean"}
 
 # 缺测率阈值：> warn 告警，> bad 判定不可用
 MISSING_WARN = 0.05
@@ -40,7 +40,7 @@ ENCODINGS = ("utf-8-sig", "utf-8", "gbk", "gb18030", "big5", "latin1")
 
 TIME_HEADER_HINTS = ("time", "date", "日期", "时间", "时刻", "datetime", "年月日", "年")
 STATION_HEADER_HINTS = ("station", "站名", "站码", "站号", "测站", "站点", "stcd", "stid", "name", "id")
-VALUE_HEADER_HINTS = ("value", "数值", "流量", "降雨", "雨量", "水位", "蒸发", "q", "pr", "pcp", "precip", "rain", "flow", "evap", "e0")
+VALUE_HEADER_HINTS = ("value", "数值", "流量", "降雨", "雨量", "水位", "蒸发", "气温", "温度", "q", "pr", "pcp", "precip", "rain", "flow", "evap", "e0", "temp")
 
 NULL_TOKENS = {"", "-", "--", "/", "//", "null", "nan", "none", "na", "n/a", "—", "－", "缺测", "缺", "无"}
 
@@ -374,6 +374,7 @@ def coverage_report(subbasins_doc: Optional[dict], manifest: dict) -> dict:
     rain_keys = list((manifest.get("series", {}).get("rain") or {}).keys())
     flow_keys = list((manifest.get("series", {}).get("flow") or {}).keys())
     evap_keys = list((manifest.get("series", {}).get("evap") or {}).keys())
+    temp_keys = list((manifest.get("series", {}).get("temp") or {}).keys())
 
     rows = []
     full_rain = 0
@@ -413,6 +414,7 @@ def coverage_report(subbasins_doc: Optional[dict], manifest: dict) -> dict:
                 "outlet_station": bname or bid or "—",
                 "flow_available": bool(flow_hit),
                 "evap_available": bool(evap_keys),
+                "temp_available": bool(temp_keys),
                 "status": status,
             }
         )
@@ -426,6 +428,7 @@ def coverage_report(subbasins_doc: Optional[dict], manifest: dict) -> dict:
             "rain_full": full_rain,
             "flow_covered": has_flow,
             "evap_available": bool(evap_keys),
+            "temp_available": bool(temp_keys),
             "calibratable": len([r for r in rows if r["status"] == "ok"]),
             "borrow": len([r for r in rows if r["status"] != "ok"]),
         },
@@ -505,10 +508,11 @@ def demo_series(
     start: str = "2015-01-01",
     flow_mode: str = "simple",
 ) -> dict:
-    """生成合成率定演示数据（降雨 / 蒸发 / 流量）。
+    """生成合成率定演示数据（降雨 / 蒸发 / 气温 / 流量）。
 
     - 降雨：站点独立生成的日雨量（湿季权重 + 少量暴雨），年雨量 ≈ 900~1100 mm；
     - 蒸发：流域蒸发能力（年周期），年均 ≈ 1.8 mm/d（≈660 mm/年，折算后与径流系数匹配）；
+    - 气温：流域平均气温（年周期，1 月 ≈1°C / 7 月 ≈24°C），供 HBV 融雪模块使用；
     - 流量：``flow_mode="simple"`` 用两层线性水库（快/慢）造"实测"流量；
       ``flow_mode="model"`` 则**跳过**，交由调用方用真值参数跑一遍本工具的新安江模型生成
       （观测系统模拟实验 OSSE，见 ``model.simulate.truth_basin_flow``），
@@ -565,6 +569,14 @@ def demo_series(
         e = 0.75 + 2.15 * (0.5 + 0.5 * math.sin(2 * math.pi * (doy - 105) / 365.0))
         evap_recs.append((d, round(max(0.2, e + rnd.gauss(0, 0.25)), 2)))
 
+    # ---- 流域气温（年周期：1 月均温 ≈ −1.5°C、7 月 ≈ 23.5°C，年均 ≈ 11°C；
+    #      冬季相当一部分天数 <0°C，供 HBV 融雪模块演示固态降水与融雪出流）
+    temp_recs = []
+    for d in dates:
+        doy = d.timetuple().tm_yday
+        t = 11.0 - 12.5 * math.cos(2 * math.pi * (doy - 15) / 365.0)  # 1 月中旬最冷
+        temp_recs.append((d, round(t + rnd.gauss(0, 0.9), 2)))
+
     # ---- 各单元产汇流 → 出口站流量
     def catchment_rain(sb: dict) -> list[float]:
         series = [(s.get("id") or s.get("name"), float(s.get("weight") or 0)) for s in sb.get("rain_stations") or []]
@@ -617,6 +629,7 @@ def demo_series(
         "rain": {k: {"name": v["name"], "records": rain_by_station[k]} for k, v in rain_stations.items()},
         "flow": flow_by_station,
         "evap": {"default": {"name": "流域蒸发能力", "records": evap_recs}},
+        "temp": {"default": {"name": "流域平均气温", "records": temp_recs}},
         "truth": truth,
     }
 

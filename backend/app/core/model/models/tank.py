@@ -52,6 +52,7 @@ def simulate_unit(
     params: dict,
     state: UnitState | None = None,
     dt_days: float = 1.0,
+    t: "np.ndarray | None" = None,  # 气温序列（可选；本模型不用，仅为统一契约保留）
 ) -> dict:
     """三层水箱逐时段演算（可率定参数见 PARAMS）。dt_days 不影响本模型（系数按时段定义）。"""
     h1 = max(0.0, float(params.get("H1", 12.0)))

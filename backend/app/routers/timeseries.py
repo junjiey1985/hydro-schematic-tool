@@ -258,11 +258,11 @@ def make_demo(pid: str, payload: dict | None = None):
     if fresh:
         st.clear_ts(pid)
 
-    # ① 降雨 + 蒸发：纯合成
+    # ① 降雨 + 蒸发 + 气温：纯合成
     doc = demo_series(sub, days=days, seed=seed, start=start, flow_mode="model")
-    created = {"rain": [], "flow": [], "evap": []}
-    for kind in ("rain", "evap"):
-        for key, item in doc[kind].items():
+    created = {"rain": [], "flow": [], "evap": [], "temp": []}
+    for kind in ("rain", "evap", "temp"):
+        for key, item in doc.get(kind, {}).items():
             recs = item["records"]
             entry = _save_series(pid, kind, key, item.get("name") or key, recs, detect_interval(recs), "生成·演示数据", key)
             created[kind].append({"key": key, "name": entry["name"], "count": entry["count"], "interval": entry["interval"]})

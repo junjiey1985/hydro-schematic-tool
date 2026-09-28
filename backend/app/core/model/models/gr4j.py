@@ -71,6 +71,7 @@ def simulate_unit(
     params: dict,
     state: UnitState | None = None,
     dt_days: float = 1.0,
+    t: "np.ndarray | None" = None,  # 气温序列（可选；本模型不用，仅为统一契约保留）
 ) -> dict:
     """GR4J 逐时段演算（可率定参数 X1 / X2 / X3 / X4）。"""
     x1 = max(10.0, float(params.get("X1", 350.0)))

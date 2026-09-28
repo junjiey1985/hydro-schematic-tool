@@ -124,6 +124,25 @@ def _prepare_inputs(
         e_arr = np.full(n, 3.0)
         warnings.append("缺少蒸发序列，按常数 3.0 mm/d 处理")
 
+    # ---------------- 气温（可选，P11 融雪）：流域平均序列；缺测用序列均值补
+    temp_items = list((manifest.get("series", {}).get("temp") or {}).values())
+    t_arr = None
+    if temp_items:
+        t_map = loader_cached("temp", next(iter((manifest["series"]["temp"]).keys())))
+        t_raw = np.array([t_map.get(dt, np.nan) for dt in axis], dtype=float)
+        if np.isfinite(t_raw).any():
+            fill = float(np.nanmean(t_raw))
+            t_raw = np.where(np.isfinite(t_raw), t_raw, fill)
+            t_arr = t_raw
+        else:
+            warnings.append("气温序列全部缺测，融雪模块按无气温（降雨版）处理")
+    # 历史同期均值（月-日气候态），供预报段气温的缺省情景
+    t_clim: dict[tuple[int, int], float] = {}
+    if t_arr is not None:
+        for dt_, v in zip(axis, t_arr):
+            t_clim.setdefault((dt_.month, dt_.day), []).append(v)
+        t_clim = {k: float(np.mean(v)) for k, v in t_clim.items()}
+
     # ---------------- 逐单元面雨量（站名匹配一次、序列读取一次）
     rain_keys = list((manifest.get("series", {}).get("rain") or {}).keys())
     unit_rain: dict[str, np.ndarray] = {}
@@ -184,6 +203,26 @@ def _prepare_inputs(
             unit_rain[code] = np.concatenate([arr, np.array(vals, dtype=float)])
         warnings.append(f"预报：未来 {ext_days} 天采用情景降雨（合计 {sum(vals):.1f} mm），非实测")
 
+        # 气温情景：缺省用历史同期均值（月-日气候态）；显式传 temp_c 可覆盖
+        if t_arr is not None:
+            t_ext_in = extend.get("temp_c")
+            if t_ext_in is None:
+                t_ext = np.array(
+                    [t_clim.get((last + timedelta(seconds=step_s * (i + 1))).month,
+                                (last + timedelta(seconds=step_s * (i + 1))).day) for i in range(ext_days)],
+                    dtype=float,
+                )
+                t_src = "历史同期均值"
+            elif isinstance(t_ext_in, (list, tuple)):
+                seq = [float(v) for v in t_ext_in]
+                t_ext = np.array((seq + [seq[-1] if seq else 10.0] * ext_days)[:ext_days], dtype=float)
+                t_src = "指定序列"
+            else:
+                t_ext = np.full(ext_days, float(t_ext_in))
+                t_src = "指定常值"
+            t_arr = np.concatenate([t_arr, t_ext])
+            warnings.append(f"预报：未来 {ext_days} 天气温取{t_src}（均值 {float(np.mean(t_ext)):.1f} °C）")
+
     return {
         "ok": True,
         "sbs": sbs,
@@ -196,6 +235,7 @@ def _prepare_inputs(
         "dt_h": dt_h,
         "dt_s": dt_s,
         "e_arr": e_arr if len(e_arr) == n else np.full(n, 3.0),
+        "t_arr": t_arr if (t_arr is not None and len(t_arr) == n) else None,
         "unit_rain": unit_rain,
         "loader_cached": loader_cached,
         "warnings": warnings,
@@ -265,6 +305,7 @@ def unit_context(
         "model": get_model(model).key,
         "p": ctx["unit_rain"].get(code, np.zeros(n)),
         "e": ctx["e_arr"],
+        "t": ctx.get("t_arr"),
         "upstream": upstream,
         "has_upstream": bool(upstream),
         "obs": obs,
@@ -286,7 +327,7 @@ def eval_unit(ctx: dict, params: dict) -> dict:
     model = ctx.get("model") or DEFAULT_MODEL
     spec = get_model(model)
     prm = sanitize_params(params, model)
-    res = spec.simulate(ctx["p"], ctx["e"], prm, dt_days=ctx["dt_h"] / 24.0)
+    res = spec.simulate(ctx["p"], ctx["e"], prm, dt_days=ctx["dt_h"] / 24.0, t=ctx.get("t"))
     q_out = res["q"] * ctx["area_km2"] * MM_PER_STEP_TO_M3S / ctx["dt_s"]
     for up in ctx.get("upstream") or []:
         if up.get("q") is None:
@@ -365,7 +406,7 @@ def simulate_basin(
         prm = sanitize_params(params.get(code) or default_params(reach_km, dt_h, model_key), model_key)
 
         p_unit = unit_rain.get(code, np.zeros(n))
-        res = spec.simulate(p_unit, e_arr, prm, dt_days=dt_h / 24.0)
+        res = spec.simulate(p_unit, e_arr, prm, dt_days=dt_h / 24.0, t=ctx.get("t_arr"))
         q_local = res["q"] * area * MM_PER_STEP_TO_M3S / dt_s  # m³/s
 
         # 直接上游来流经河道演算至本单元出口

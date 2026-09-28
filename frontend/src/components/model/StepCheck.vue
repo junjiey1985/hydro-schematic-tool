@@ -24,6 +24,11 @@
           <div class="cs">{{ points.evap || 0 }} 个值</div>
         </div>
         <div class="card">
+          <div class="ck">气温序列<i class="opt">可选</i></div>
+          <div class="cv" :class="counts.temp ? '' : 'muted'">{{ counts.temp || 0 }} <i>条</i></div>
+          <div class="cs">{{ points.temp || 0 }} 个值 · HBV 融雪用</div>
+        </div>
+        <div class="card">
           <div class="ck">时段跨度</div>
           <div class="cv sm">{{ span.start ? span.start.slice(0, 10) : '—' }}</div>
           <div class="cs">至 {{ span.end ? span.end.slice(0, 10) : '—' }}</div>
@@ -58,6 +63,7 @@
               <th style="width: 120px">缺测站</th>
               <th class="num" style="width: 76px">实测流量</th>
               <th class="num" style="width: 66px">蒸发</th>
+              <th class="num" style="width: 66px">气温</th>
               <th style="width: 88px">结论</th>
             </tr>
           </thead>
@@ -83,6 +89,9 @@
               <td class="num" :class="r.evap_available ? 'ok-t' : 'warn-t'">
                 {{ r.evap_available ? '有' : '无' }}
               </td>
+              <td class="num" :class="r.temp_available ? 'ok-t' : 'muted'">
+                {{ r.temp_available ? '有' : '—' }}
+              </td>
               <td class="small">
                 <span :class="statusClass(r.status)">{{ statusText(r.status) }}</span>
               </td>
@@ -93,6 +102,7 @@
       <div class="note">
         结论判定：出口站有实测流量 → <b>可率定</b>（独立优化该单元参数）；无流量 → <b>借用参数</b>
         （不独立率定，最终参数借用直接下游已率定单元）。面雨量覆盖率 = 该单元泰森多边形内已挂接雨量站的权重占比。
+        气温序列为可选项：提供时 HBV 自动启用融雪模块，未提供时按降雨版演算。
       </div>
 
       <!-- 序列清单 -->
@@ -177,10 +187,11 @@ const unitCount = computed(() => ((state.subbasins && state.subbasins.subbasins)
 const kinds = [
   { key: 'rain', label: '降雨' },
   { key: 'flow', label: '流量' },
-  { key: 'evap', label: '蒸发' }
+  { key: 'evap', label: '蒸发' },
+  { key: 'temp', label: '气温' }
 ]
 
-const hasSeries = computed(() => !!(counts.value.rain || counts.value.flow || counts.value.evap))
+const hasSeries = computed(() => !!(counts.value.rain || counts.value.flow || counts.value.evap || counts.value.temp))
 const canNext = computed(() => !!(counts.value.rain && counts.value.evap) && unitCount.value > 0)
 
 function colorOf(code) {
@@ -231,6 +242,18 @@ async function makeDemo() {
   color: var(--text-3);
   margin-bottom: 3px;
   white-space: nowrap;
+}
+.card .ck .opt {
+  font-size: 9px;
+  font-style: normal;
+  color: var(--text-3);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 0 4px;
+  margin-left: 4px;
+}
+.card .cv.muted {
+  color: var(--text-3);
 }
 .card .cv {
   font-size: 17px;
