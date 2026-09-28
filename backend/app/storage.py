@@ -382,6 +382,36 @@ def cal_run_dir(pid: str, rid: str) -> Path:
     return cal_runs_dir(pid) / safe
 
 
+def calibration_set_path(pid: str) -> Path:
+    """项目参数集文件（同时记录所选的产汇流模型）。"""
+    return project_dir(pid) / "calibration" / "default.json"
+
+
+def read_project_model(pid: str) -> str:
+    """项目当前选用的产汇流模型 key（default.json 的 ``model`` 字段）。
+
+    旧项目（P1–P9 产物）没有该字段，回退到默认模型，升级不破坏既有数据。
+    """
+    from .core.model.models import DEFAULT_MODEL, is_valid
+
+    doc = read_json_file(calibration_set_path(pid)) or {}
+    key = doc.get("model")
+    return str(key).strip().lower() if is_valid(key) else DEFAULT_MODEL
+
+
+def write_project_model(pid: str, model: str) -> None:
+    """仅改写 default.json 的 ``model`` 字段，保留其余内容（params 由路由层管理）。"""
+    from .core.model.models import get_model
+
+    key = get_model(model).key
+    path = calibration_set_path(pid)
+    doc = read_json_file(path) or {}
+    doc["model"] = key
+    doc.setdefault("saved_at", now_iso())
+    write_json_file(path, doc)
+    touch_project(pid)
+
+
 def read_json_file(path) -> dict | None:
     doc = _read_json(Path(path))
     return doc if isinstance(doc, dict) else None

@@ -2,8 +2,12 @@
 
 对应技术方案 §6.1 的结构：
 
-    单元 i 出口模拟流量 = 本单元区间产流（新安江）
+    单元 i 出口模拟流量 = 本单元区间产流（当前选定的概念性集总模型）
                        + Σ 直接上游单元出流（马斯京根分段演算至本单元出口）
+
+**产汇流模型可插拔**：本模块只依赖 :mod:`app.core.model.models` 的注册表，
+``simulate_unit(p, e0, params, state, dt_days)`` 的签名与返回结构对所有模型一致。
+新增模型不需要改动本文件的任何逻辑。
 
 演算河段的 KE 按上下游单元出口的**空间距离**自动估算（弯曲系数 1.3、波速 1.5 m/s），
 XE 取本单元参数；分段数按稳定性自动确定。亦可对某单元显式指定 KE 覆盖自动值。
@@ -18,8 +22,8 @@ import numpy as np
 from ..timeseries import match_series_key
 from . import routing
 from .metrics import all_metrics
+from .models import DEFAULT_MODEL, get_model
 from .params import default_params, sanitize_params
-from .xaj import simulate_unit
 
 MM_PER_STEP_TO_M3S = 1000.0  # Q[m³/s] = mm × km² × 1000 / Δt_s
 
@@ -204,12 +208,14 @@ def unit_context(
     series_loader,
     code: str,
     period: dict | None = None,
+    model: str | None = None,
 ) -> dict:
     """为**单个单元**的率定目标函数预计算全部固定量（只做一次，之后每次评估仅跑模型核）。
 
     返回 dict：``{code, name, area_km2, dt_s, dt_h, p(面雨量), e(蒸发), times,
-    upstream[{code, ke, q?}], obs, outlet_station, i0}``。
-    ``upstream[].q`` 由链式率定在率定到该单元前填入（上游已率定的出流）。
+    model, upstream[{code, ke, q?}], obs, outlet_station, i0}``。
+    ``upstream[].q`` 由链式率定在率定到该单元前填入（上游已率定的出流）；
+    ``model`` 记录本单元所用的产汇流模型，``eval_unit`` 据此派发。
     """
     ctx = _prepare_inputs(subbasins_doc, manifest, series_loader, period)
     if not ctx.get("ok"):
@@ -256,6 +262,7 @@ def unit_context(
         "step_s": ctx["step_s"],
         "n": n,
         "times": times,
+        "model": get_model(model).key,
         "p": ctx["unit_rain"].get(code, np.zeros(n)),
         "e": ctx["e_arr"],
         "upstream": upstream,
@@ -273,10 +280,13 @@ def eval_unit(ctx: dict, params: dict) -> dict:
     """用给定参数评估单个单元（率定目标的热路径，~6 ms）。
 
     需 ``ctx`` 由 :func:`unit_context` 生成，且 ``ctx["upstream"][i]["q"]`` 已填入
-    上游已率定的出流。返回 ``{q(全时段 m³/s), balance}``。
+    上游已率定的出流。产汇流模型由 ``ctx["model"]`` 决定（缺省新安江）。
+    返回 ``{q(全时段 m³/s), balance, params}``。
     """
-    prm = sanitize_params(params)
-    res = simulate_unit(ctx["p"], ctx["e"], prm)
+    model = ctx.get("model") or DEFAULT_MODEL
+    spec = get_model(model)
+    prm = sanitize_params(params, model)
+    res = spec.simulate(ctx["p"], ctx["e"], prm, dt_days=ctx["dt_h"] / 24.0)
     q_out = res["q"] * ctx["area_km2"] * MM_PER_STEP_TO_M3S / ctx["dt_s"]
     for up in ctx.get("upstream") or []:
         if up.get("q") is None:
@@ -316,16 +326,20 @@ def simulate_basin(
     period: dict | None = None,
     return_raw: bool = False,
     extend: dict | None = None,
+    model: str | None = None,
 ) -> dict:
     """全流域模拟。
 
     - subbasins_doc: storage.read_subbasins() 结果
     - manifest: 时序清单（用其统计的起止与时段）
     - series_loader(kind, key) -> [(dt, value)]：序列读取回调
-    - params: {unit_code: {K,B,SM,EX,KGF,CG,CI,CS,XE,KE?}}（缺省补默认）
+    - params: {unit_code: 参数集}（缺省补当前模型的默认值）
     - period: {"start","end","warmup_days"}（可选）
     - extend: 预报扩展（见 :func:`_prepare_inputs`），P6 情景预报用
+    - model: 产汇流模型 key（xaj / gr4j / tank / hbv），缺省新安江
     """
+    spec = get_model(model)
+    model_key = spec.key
     ctx = _prepare_inputs(subbasins_doc, manifest, series_loader, period, extend=extend)
     if not ctx.get("ok"):
         return ctx
@@ -348,10 +362,10 @@ def simulate_basin(
             warnings.append(f"{code}: 单元面积异常，跳过")
             continue
         reach_km = float(sb.get("river_length_km") or 0.0)
-        prm = sanitize_params(params.get(code) or default_params(reach_km, dt_h))
+        prm = sanitize_params(params.get(code) or default_params(reach_km, dt_h, model_key), model_key)
 
         p_unit = unit_rain.get(code, np.zeros(n))
-        res = simulate_unit(p_unit, e_arr, prm)
+        res = spec.simulate(p_unit, e_arr, prm, dt_days=dt_h / 24.0)
         q_local = res["q"] * area * MM_PER_STEP_TO_M3S / dt_s  # m³/s
 
         # 直接上游来流经河道演算至本单元出口
@@ -447,6 +461,9 @@ def simulate_basin(
 
     out = {
         "ok": True,
+        "model": model_key,
+        "model_name": spec.name,
+        "closure_expr": spec.closure_expr,
         "dt_s": step_s,
         "n_steps": n,
         "period": {"start": times[i0], "end": times[-1], "warmup_steps": i0},
@@ -487,20 +504,21 @@ def truth_basin_flow(
     noise: float = 0.05,
     seed: int = 20260921,
     period: dict | None = None,
+    model: str | None = None,
 ) -> dict:
     """观测系统模拟实验（OSSE）：用**真值参数**跑一遍全流域模型，产出各单元出口站的
     合成"实测"流量序列（叠加乘性观测噪声），供率定回收验证。
 
     与 ``simulate_basin`` 使用完全相同的模型结构与参数化，因此用真值参数率定应能
     把 NSE 推到 ≈ 0.99，是检验 P3 率定引擎是否收敛的基准。
+    真值参数取自当前模型（``ModelSpec.truth``），不传 ``truth`` 时按 ``model`` 取。
 
     返回 ``{station_id: {"name": 站名, "code": 单元, "records": [(datetime, Q)]}}``。
     """
     import random
 
-    from .params import DEMO_TRUTH_PARAMS
-
-    truth = dict(truth or DEMO_TRUTH_PARAMS)
+    spec = get_model(model)
+    truth = dict(truth or spec.truth)
     evap_items = list((manifest.get("series", {}).get("evap") or {}).values())
     rain_items = list((manifest.get("series", {}).get("rain") or {}).values())
     base = evap_items[0] if evap_items else (rain_items[0] if rain_items else None)
@@ -511,11 +529,14 @@ def truth_basin_flow(
     # 每单元：真值参数 + 按河长估算的 KE
     params: dict[str, dict] = {}
     for sb in subbasins_doc.get("subbasins", []):
-        prm = default_params(float(sb.get("river_length_km") or 0.0), dt_h)
+        prm = default_params(float(sb.get("river_length_km") or 0.0), dt_h, spec.key)
         prm.update(truth)
         params[sb["code"]] = prm
 
-    res = simulate_basin(subbasins_doc, manifest, series_loader, params=params, period=period, return_raw=True)
+    res = simulate_basin(
+        subbasins_doc, manifest, series_loader,
+        params=params, period=period, return_raw=True, model=spec.key,
+    )
     if not res.get("ok"):
         return {}
 

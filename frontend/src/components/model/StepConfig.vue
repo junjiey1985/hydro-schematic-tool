@@ -1,8 +1,32 @@
 <template>
   <div class="step">
-    <!-- 参数矩阵 -->
+    <!-- ① 产汇流模型 -->
     <div class="sub-sec">
-      ① 参数集
+      ① 产汇流模型
+      <span class="muted">决定参数表、率定区间与水量平衡恒等式；切换会清空已保存参数</span>
+    </div>
+    <div class="model-cards">
+      <button
+        v-for="m in models"
+        :key="m.key"
+        class="mcard"
+        :class="{ on: m.key === cur }"
+        :disabled="!!state.busy"
+        @click="pick(m)"
+      >
+        <span class="mname">{{ m.name }}</span>
+        <span class="morig">{{ m.origin }}</span>
+        <span class="mcal"><b>{{ m.n_calib }}</b> 个可率定参数</span>
+      </button>
+    </div>
+    <div v-if="curInfo" class="note">
+      <b>{{ curInfo.structure }}</b>。水量平衡：{{ curInfo.closure_expr }}。
+      <span v-if="curInfo.refs && curInfo.refs.length" class="muted">出处：{{ curInfo.refs[0] }}</span>
+    </div>
+
+    <!-- ② 参数矩阵 -->
+    <div class="sub-sec">
+      ② 参数集
       <span class="muted">列为预报单元，表内可直接编辑；出区间标红并拦截运行</span>
       <span class="grow"></span>
       <button class="lnk" :disabled="!!state.busy" @click="reload">重新载入</button>
@@ -161,11 +185,14 @@
 <script setup>
 import { computed, reactive, ref, watch } from 'vue'
 import {
+  currentModel,
   loadCalibrationParams,
   loadCalibrationRuns,
   loadTimeseries,
+  modelInfoOf,
   runSimulation,
   saveCalibrationParams,
+  setModel,
   startCalibration,
   state,
   subbasinColorOf,
@@ -182,6 +209,23 @@ const shared = reactive({})
 const cal = computed(() => state.calibration)
 const units = computed(() => (cal.value && cal.value.units) || [])
 const ready = computed(() => units.value.length > 0)
+
+// ① 产汇流模型（P10 多模型支持）
+const models = computed(() => state.models || [])
+const cur = currentModel
+const curInfo = computed(() => modelInfoOf(cur.value))
+async function pick(m) {
+  if (!m || m.key === cur.value) return
+  if (
+    cal.value &&
+    cal.value.has_saved &&
+    !window.confirm(
+      `切换到「${m.name}」后，已保存的参数集会重置为新模型默认值（参数不跨模型通用），确定切换？`
+    )
+  )
+    return
+  await setModel(m.key)
+}
 
 const paramRows = computed(() => {
   const sp = (cal.value && cal.value.spec) || {}
@@ -389,6 +433,57 @@ defineExpose({ reload, ensurePeriod: async () => loadTimeseries(false) })
 <style scoped>
 .step {
   font-size: 12px;
+}
+.model-cards {
+  display: flex;
+  gap: 8px;
+  margin: 6px 0 4px;
+  flex-wrap: wrap;
+}
+.mcard {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  min-width: 168px;
+  padding: 8px 12px;
+  border: 1px solid var(--border-1, #ddd);
+  border-radius: 8px;
+  background: var(--bg-2, #fafafa);
+  cursor: pointer;
+  text-align: left;
+  font-size: 12px;
+  color: var(--text-1, #333);
+}
+.mcard:hover {
+  border-color: var(--accent, #3b82f6);
+}
+.mcard.on {
+  border-color: var(--accent, #3b82f6);
+  background: var(--accent-weak, rgba(59, 130, 246, 0.08));
+}
+.mcard:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+.mname {
+  font-weight: 600;
+}
+.morig {
+  font-size: 10px;
+  color: var(--text-3, #999);
+}
+.mcal {
+  font-size: 10px;
+  color: var(--text-2, #666);
+}
+.mcal b {
+  color: var(--accent, #3b82f6);
+}
+.note {
+  margin: 4px 0 8px;
+  font-size: 11px;
+  color: var(--text-2, #666);
 }
 .param-wrap {
   /* 压住表高，让「运行模拟 / 启动率定」尽量不落出首屏（9 行参数可滚动查看） */

@@ -595,7 +595,8 @@ const calibRunning = computed(() => {
 })
 
 const mdlTitle = computed(() => {
-  if (!state.subbasins) return '新安江三水源 + 马斯京根模拟与 SCE-UA 率定：请先完成「子流域划分」'
+  const mn = (state.calibration && state.calibration.model_name) || '概念性集总模型'
+  if (!state.subbasins) return `${mn} + 马斯京根模拟与 SCE-UA 率定：请先完成「子流域划分」`
   const n = (state.subbasins.subbasins || []).length
   if (calibRunning.value) {
     const st = state.calib.status || {}

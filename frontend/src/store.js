@@ -16,7 +16,8 @@ export const state = reactive({
   subbasins: null,          // 子流域划分结果（含 subbasins / stats / rows）
   subOptions: null,         // /subbasins/options 返回的默认参数与候选控制断面
   timeseries: null,         // 时序数据清单 + 覆盖率（率定输入，/timeseries/manifest）
-  calibration: null,        // 模型参数集 + 参数规范（/calibration/params）
+  calibration: null,        // 模型参数集 + 参数规范（/calibration/params，随项目模型而定）
+  models: [],               // 可选产汇流模型列表（/calibration/models，P10）
   simResult: null,          // 最近一次模拟结果（/calibration/simulate）
   calib: {                  // 率定任务视图（P3 后端接口）
     rid: '',                // 当前任务 run_id
@@ -548,12 +549,52 @@ export async function fetchSeries(kind, key, limit = 800) {
 }
 
 // ---------------------------------------------------------------- 模型模拟（P2）
-/** 单元参数集 + 参数规范（区间 / 标签 / 固定参数）。 */
+/** 可选产汇流模型列表（新安江 / GR4J / Tank / HBV）。 */
+export async function loadModels(force = false) {
+  if (!projectId.value) return []
+  if (!force && state.models.length) return state.models
+  const r = await api.calibrationModels(projectId.value).catch(() => null)
+  state.models = (r && r.models) || []
+  return state.models
+}
+
+/** 当前项目的产汇流模型 key（xaj / gr4j / tank / hbv）。 */
+export const currentModel = computed(
+  () => (state.calibration && state.calibration.model) || (state.models[0] && state.models[0].key) || 'xaj'
+)
+
+export function modelInfoOf(key) {
+  return state.models.find((m) => m.key === key) || null
+}
+
+/** 单元参数集 + 参数规范（区间 / 标签 / 固定参数），随项目模型而定。 */
 export async function loadCalibrationParams(force = false) {
   if (!projectId.value) return null
   if (!force && state.calibration) return state.calibration
   state.calibration = await api.calibrationParams(projectId.value).catch(() => null)
+  if (state.calibration && state.calibration.models && !state.models.length) {
+    state.models = state.calibration.models
+  }
   return state.calibration
+}
+
+/** 切换项目的产汇流模型（后端会清空已保存参数集，参数不可跨模型混用）。 */
+export async function setModel(model) {
+  return withBusy(`正在切换产流模型为 ${model}…`, async () => {
+    const r = await api.calibrationSetModel(projectId.value, model)
+    state.calibration = r
+    state.simResult = null
+    state.calib.result = null
+    state.calib.fcResult = null
+    toast(
+      r.reset_params
+        ? '已切换模型；参数集为模型专属，已重置为新模型默认值'
+        : '模型未变化，参数保持不变',
+      'ok',
+      4200
+    )
+    return r
+  })
 }
 
 /** 保存参数集为项目默认；传 reset=true 恢复默认参数。 */
@@ -568,7 +609,8 @@ export async function saveCalibrationParams(params = null, { reset = false } = {
 
 /** 运行全流域模拟：返回 { units, water_balance, ... }，同时写入 state.simResult。 */
 export async function runSimulation(payload = {}) {
-  return withBusy('正在模拟（新安江 + 马斯京根）…', async () => {
+  const mn = (state.calibration && state.calibration.model_name) || ''
+  return withBusy(`正在模拟（${mn ? mn + ' + ' : ''}马斯京根）…`, async () => {
     const r = await api.calibrationSimulate(projectId.value, payload)
     state.simResult = r
     return r

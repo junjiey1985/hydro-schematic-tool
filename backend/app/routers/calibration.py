@@ -2,6 +2,11 @@
 
 - P2：参数集查询/保存、全流域模拟（simulate）
 - P3：SCE-UA 链式率定（后台线程 + 进度落盘 + 可终止 + 结果落盘 + 参数应用）
+- P10：**产汇流模型可插拔**——项目级模型选择（新安江 / GR4J / Tank / HBV），
+  参数规范、率定、GLUE、预报、导出全部按当前模型自动切换。
+
+模型选择与参数集一同持久化于 ``calibration/default.json``：``{"model": "hbv", "params": {...}}``。
+切换模型会清空已保存的参数集（不同模型的参数互不兼容，避免串味）。
 """
 from __future__ import annotations
 
@@ -17,7 +22,8 @@ from fastapi import APIRouter, HTTPException, Response
 from .. import storage as st
 from ..core.model.calibrate import run_calibration
 from ..core.model.glue import run_glue as glue_run
-from ..core.model.params import FIXED_SPEC, PARAM_KEYS, PARAM_SPEC, default_params
+from ..core.model.models import DEFAULT_MODEL, get_model, is_valid, list_model_info
+from ..core.model.params import default_params, fixed_spec, param_keys, param_spec
 from ..core.model.simulate import simulate_basin
 from ..core.timeseries import summarize
 from .deps import get_project_or_404, series_loader
@@ -37,28 +43,37 @@ def _require_subbasins(pid: str) -> dict:
 
 
 def _default_set_path(pid: str):
-    return st.project_dir(pid) / "calibration" / "default.json"
+    return st.calibration_set_path(pid)
+
+
+def _read_default_set(pid: str) -> dict:
+    """读取项目参数集与模型选择。
+
+    旧版文件（P1–P9 产物）没有 ``model`` 字段，按默认模型（新安江）处理，
+    参数集照常可用——升级不破坏既有项目。
+    """
+    doc = st.read_json_file(_default_set_path(pid)) or {}
+    return {"model": st.read_project_model(pid), "params": doc.get("params") or {}}
 
 
 def _read_default_params(pid: str) -> dict | None:
-    p = _default_set_path(pid)
-    if not p.exists():
-        return None
-    try:
-        doc = json.loads(p.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
-        return None
-    return doc.get("params") or None
+    return _read_default_set(pid).get("params") or None
+
+
+def _project_model(pid: str) -> str:
+    return st.read_project_model(pid)
 
 
 def _unit_rows(pid: str, sub: dict):
-    """每个单元的默认参数（叠加已保存的 default.json）。"""
-    saved = _read_default_params(pid) or {}
+    """每个单元的默认参数（叠加已保存的 default.json，按当前模型的参数体系）。"""
+    doc = _read_default_set(pid)
+    model, saved = doc["model"], doc["params"]
+    valid = set(param_keys(model))
     rows = []
     for sb in sorted(sub.get("subbasins", []), key=lambda s: (s.get("order_index") or 0)):
         code = sb["code"]
-        prm = default_params(float(sb.get("river_length_km") or 0.0))
-        prm.update({k: v for k, v in (saved.get(code) or {}).items() if k in PARAM_KEYS})
+        prm = default_params(float(sb.get("river_length_km") or 0.0), 24.0, model)
+        prm.update({k: v for k, v in (saved.get(code) or {}).items() if k in valid})
         rows.append(
             {
                 "code": code,
@@ -73,24 +88,76 @@ def _unit_rows(pid: str, sub: dict):
     return rows
 
 
-# ---------------------------------------------------------------- 参数集
-@router.get("/{pid}/calibration/params")
-def get_params(pid: str):
-    """每单元的当前参数（default.json 覆盖默认值）+ 参数规范（供前端表单）。"""
-    get_project_or_404(pid)
-    sub = _require_subbasins(pid)
+def _params_payload(pid: str, sub: dict) -> dict:
+    """参数面板的完整载荷（spec / fixed / units / 模型列表）。"""
+    model = _project_model(pid)
+    spec = get_model(model)
     return {
         "ok": True,
-        "spec": PARAM_SPEC,
-        "fixed": FIXED_SPEC,
+        "model": model,
+        "model_name": spec.name,
+        "models": list_model_info(),
+        "spec": param_spec(model),
+        "fixed": fixed_spec(model),
+        "closure_expr": spec.closure_expr,
         "units": _unit_rows(pid, sub),
         "has_saved": bool(_read_default_params(pid)),
     }
 
 
+# ---------------------------------------------------------------- 模型选择（P10）
+@router.get("/{pid}/calibration/models")
+def list_models_api(pid: str):
+    """可选的产汇流模型列表（含参数规范、结构说明、参考文献）。"""
+    get_project_or_404(pid)
+    return {"ok": True, "current": _project_model(pid), "models": list_model_info()}
+
+
+@router.post("/{pid}/calibration/model")
+def set_model(pid: str, payload: dict):
+    """切换项目的产汇流模型。
+
+    body: ``{model: "xaj"|"gr4j"|"tank"|"hbv"}``
+
+    参数集是**模型专属**的，切换模型会清空已保存的参数集（回到新模型的默认值），
+    否则会出现「把 HBV 的 FC 当成新安江的 K 用」这种串味。
+    """
+    get_project_or_404(pid)
+    sub = _require_subbasins(pid)
+    key = str((payload or {}).get("model") or "").strip().lower()
+    if not is_valid(key):
+        raise HTTPException(400, f"不支持的模型: {key}（可选 " + " / ".join(m["key"] for m in list_model_info()) + "）")
+    prev = _project_model(pid)
+    changed = prev != key
+    path = _default_set_path(pid)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {"model": key, "saved_at": st.now_iso(), "params": {}},
+            ensure_ascii=False, indent=2,
+        ),
+        encoding="utf-8",
+    )
+    st.touch_project(pid)
+    return {
+        **_params_payload(pid, sub),
+        "previous": prev,
+        "reset_params": bool(changed),
+    }
+
+
+# ---------------------------------------------------------------- 参数集
+@router.get("/{pid}/calibration/params")
+def get_params(pid: str):
+    """每单元的当前参数（default.json 覆盖默认值）+ 参数规范 + 可选模型列表。"""
+    get_project_or_404(pid)
+    sub = _require_subbasins(pid)
+    return _params_payload(pid, sub)
+
+
 @router.post("/{pid}/calibration/apply")
 def apply_params(pid: str, payload: dict):
-    """保存参数集为项目默认。
+    """保存参数集为项目默认（按当前模型的参数体系）。
 
     body 三选一：
       {params: {code: {...}}}      保存指定参数
@@ -100,13 +167,22 @@ def apply_params(pid: str, payload: dict):
     get_project_or_404(pid)
     sub = _require_subbasins(pid)
     path = _default_set_path(pid)
+    model = _project_model(pid)
+    spec = param_spec(model)
+
+    def _write(params: dict):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps(
+                {"model": model, "saved_at": st.now_iso(), "params": params},
+                ensure_ascii=False, indent=2,
+            ),
+            encoding="utf-8",
+        )
+
     if payload.get("reset"):
         # 逻辑重置优先：把参数集写成空（不依赖删除文件，Windows 下文件可能被占用）
-        if not st.remove_file(path) and path.exists():
-            path.write_text(
-                json.dumps({"saved_at": st.now_iso(), "params": {}}, ensure_ascii=False, indent=2),
-                encoding="utf-8",
-            )
+        _write({})
         st.touch_project(pid)
         return {"ok": True, "reset": True, "units": _unit_rows(pid, sub)}
 
@@ -116,23 +192,23 @@ def apply_params(pid: str, payload: dict):
         doc = st.read_json_file(st.cal_run_dir(pid, rid) / "result.json")
         if not doc:
             raise HTTPException(404, f"任务 {rid} 的结果尚未生成")
+        run_model = doc.get("model")
+        if run_model and run_model != model:
+            raise HTTPException(
+                400,
+                f"该率定任务用的是 {get_model(run_model).name}，当前项目模型是 "
+                f"{get_model(model).name}，参数不可混用；请先切回该模型",
+            )
         params_in = doc.get("final_params") or {}
     if not isinstance(params_in, dict):
         raise HTTPException(400, "params 需为 {单元code: {参数}} 结构")
+    keys = list(spec.keys())
     clean = {}
     for sb in sub.get("subbasins", []):
         code = sb["code"]
         if code in params_in:
-            clean[code] = {
-                k: float(params_in[code].get(k, PARAM_SPEC[k]["default"])) for k in PARAM_KEYS
-            }
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps(
-            {"saved_at": st.now_iso(), "params": clean}, ensure_ascii=False, indent=2
-        ),
-        encoding="utf-8",
-    )
+            clean[code] = {k: float(params_in[code].get(k, spec[k]["default"])) for k in keys}
+    _write(clean)
     st.touch_project(pid)
     return {"ok": True, "saved": list(clean.keys()), "units": _unit_rows(pid, sub)}
 
@@ -158,6 +234,7 @@ def run_simulate(pid: str, payload: dict | None = None):
         series_loader(pid),
         params=merged,
         period=payload.get("period"),
+        model=_project_model(pid),
     )
     if not res.get("ok"):
         raise HTTPException(400, res.get("error") or "模拟失败")
@@ -239,7 +316,8 @@ def run_forecast(pid: str, payload: dict | None = None):
         merged.setdefault(code, {}).update(prm or {})
 
     res = simulate_basin(sub, manifest, series_loader(pid), params=merged or None,
-                         period=payload.get("period"), extend=extend)
+                         period=payload.get("period"), extend=extend,
+                         model=_project_model(pid))
     if not res.get("ok"):
         raise HTTPException(400, res.get("error") or "预报失败")
 
@@ -279,6 +357,7 @@ def run_glue_api(pid: str, payload: dict | None = None):
     sub = _require_subbasins(pid)
     payload = payload or {}
     cfg = {
+        "model": _project_model(pid),
         "n_samples": payload.get("n_samples") or 1000,
         "threshold": payload.get("threshold") or 0.7,
         "seed": int(payload.get("seed") or 0),
@@ -312,6 +391,8 @@ def _worker(pid: str, rid: str, cfg: dict, sub: dict) -> None:
     started = time.time()
     prog = {
         "run_id": rid, "pid": pid, "status": "running", "phase": "prepare",
+        "model": cfg.get("model") or DEFAULT_MODEL,
+        "model_name": get_model(cfg.get("model")).name,
         "unit": None, "units_done": [], "gen": 0, "evals": 0, "best_f": None,
         "best": None, "started_at": st.now_iso(), "elapsed_s": 0.0, "error": None,
         "history": [],          # 逐代收敛历史（运行中即可画收敛曲线）
@@ -357,8 +438,12 @@ def _worker(pid: str, rid: str, cfg: dict, sub: dict) -> None:
             return
 
         # 真值对比（演示数据才有；便于验证率定是否回收真值）
+        # 真值参数是**模型专属**的：只有率定所用模型与生成演示数据的模型一致时才有意义
         truth = st.read_json_file(st.project_dir(pid) / "calibration" / "demo_truth.json") or {}
         tparams = truth.get("params") or {}
+        truth_model = truth.get("model") or DEFAULT_MODEL
+        if tparams and truth_model != (cfg.get("model") or DEFAULT_MODEL):
+            tparams = {}
         compare = []
         if tparams:
             for u in res.get("units") or []:
@@ -381,6 +466,9 @@ def _worker(pid: str, rid: str, cfg: dict, sub: dict) -> None:
             "status": res.get("status") or "done",
             "stopped": res.get("status") == "stopped",
             "mode": res.get("mode") or "chain",
+            "model": cfg.get("model") or DEFAULT_MODEL,
+            "model_name": get_model(cfg.get("model")).name,
+            "closure_expr": get_model(cfg.get("model")).closure_expr,
             "joint": bool(res.get("joint")),
             "objective": res.get("objective"),
             "slots": res.get("slots") or [],
@@ -432,6 +520,9 @@ def start_run(pid: str, payload: dict | None = None):
            seed, tol, lock: {code:{参数:值}},
            share?: {参数:[单元...]}（联合模式参数共享分组）,
            weights?: {code: 权重}（联合模式各站权重，默认 1）}
+
+    产汇流模型取项目当前选择（``POST /{pid}/calibration/model``），不接受请求体覆盖——
+    否则参数集与模型可能不匹配。
     """
     get_project_or_404(pid)
     sub = _check_runnable(pid)
@@ -444,6 +535,7 @@ def start_run(pid: str, payload: dict | None = None):
     if mode not in ("chain", "joint"):
         raise HTTPException(400, f"不支持的率定模式: {mode}（可选 chain / joint）")
     cfg = {
+        "model": _project_model(pid),
         "mode": mode,
         "period": payload.get("period") or None,
         "split": payload.get("split") or 0.7,
@@ -629,6 +721,10 @@ def export_csv(pid: str, what: str = "params", rid: str = ""):
     if rid and not result_doc:
         raise HTTPException(404, f"任务 {rid} 的结果尚未生成")
 
+    # 导出跟随模型：有 rid 按该次率定所用模型，否则按项目当前模型
+    model = (result_doc or {}).get("model") or _project_model(pid)
+    keys = param_keys(model)
+
     if what == "params":
         params = (result_doc or {}).get("final_params") if result_doc else None
         if params is None:
@@ -637,7 +733,7 @@ def export_csv(pid: str, what: str = "params", rid: str = ""):
         for sb in sbs:
             code = sb["code"]
             prm = params.get(code) or {}
-            for k in PARAM_KEYS:
+            for k in keys:
                 if k in prm:
                     lines.append(f"{code},{k},{float(prm[k]):.6g}")
         tag = rid or "current"
@@ -649,7 +745,8 @@ def export_csv(pid: str, what: str = "params", rid: str = ""):
             params = _read_default_params(pid) or {}
         period = ((result_doc or {}).get("config") or {}).get("period") if result_doc else None
         sim = simulate_basin(sub, st.read_ts_manifest(pid), series_loader(pid),
-                             params=params or None, period=period, return_raw=True)
+                             params=params or None, period=period, return_raw=True,
+                             model=model)
         if not sim.get("ok"):
             raise HTTPException(400, sim.get("error") or "复算失败")
         raw = sim["_raw"]

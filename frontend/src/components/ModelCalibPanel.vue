@@ -4,7 +4,7 @@
       <h3>
         模型模拟与参数率定
         <span class="mc-sub">
-          新安江三水源 + 马斯京根 · 逐单元演算区间产流 → 沿上下游链演算至各站出口 · SCE-UA 链式率定
+          {{ modelName }} + 马斯京根 · 逐单元演算区间产流 → 沿上下游链演算至各站出口 · SCE-UA 链式率定
         </span>
       </h3>
 
@@ -58,14 +58,22 @@ import StepRun from './model/StepRun.vue'
 import StepResult from './model/StepResult.vue'
 import StepForecast from './model/StepForecast.vue'
 import {
+  currentModel,
   loadCalibrationParams,
   loadCalibrationRuns,
+  loadModels,
   loadTimeseries,
+  modelInfoOf,
   state
 } from '../store'
 
 const props = defineProps({ show: { type: Boolean, default: false } })
 defineEmits(['close'])
+
+const modelName = computed(() => {
+  const info = modelInfoOf(currentModel.value)
+  return (info && info.name) || (state.calibration && state.calibration.model_name) || '概念性集总模型'
+})
 
 const tab = ref('config')
 const resultView = ref('sim')
@@ -160,6 +168,7 @@ watch(
   () => props.show,
   async (v) => {
     if (!v) return
+    await loadModels()
     await loadCalibrationParams(true)
     await loadTimeseries(false)
     await loadCalibrationRuns()

@@ -1,5 +1,8 @@
 """SCE-UA 率定（P3 链式 / P5 联合）。
 
+产汇流模型可插拔（``config["model"]``，见 :mod:`app.core.model.models`）：
+自由参数集、率定区间、默认值与最终复算全部按当前模型取，率定算法本身与模型无关。
+
 对应技术方案 §6.3 / §6.4：
 
 - **链式策略（默认）**：按排水序（order_index）自上而下逐单元率定；率定某单元时，
@@ -25,7 +28,8 @@ import time
 import numpy as np
 
 from .metrics import all_metrics
-from .params import PARAM_KEYS, PARAM_SPEC, default_params
+from .models import DEFAULT_MODEL, get_model
+from .params import default_params, param_keys, param_spec
 from .simulate import eval_unit, metrics_of, simulate_basin, unit_context
 
 W_PBIAS = 0.3      # 目标函数中水量偏差权重
@@ -180,25 +184,30 @@ def sceua(
 
 # ---------------------------------------------------------------- 公共
 def free_spec_for(ctx: dict, lock: dict | None = None) -> tuple[list[str], list[tuple[float, float]]]:
-    """单元的自由参数与率定区间。
+    """单元的自由参数与率定区间（按 ``ctx["model"]`` 取该模型的参数体系）。
 
-    8 个产流参数恒开放；XE 仅当该单元有直接上游（来流演算用得到）才开放，
+    产汇流参数恒开放（个数随模型而定：XAJ 8 / HBV 10 / Tank 11 / GR4J 4）；
+    XE 是共用的河道演算参数，仅当该单元有直接上游（来流演算用得到）才开放，
     否则不可辨识。``lock`` 中的键被固定为给定值、从自由集中剔除。
     """
+    model = ctx.get("model") or DEFAULT_MODEL
+    spec = param_spec(model)
     lock = lock or {}
-    keys = [k for k in PARAM_KEYS if k != "XE"]
+    keys = [k for k in spec if k != "XE"]
     if ctx.get("has_upstream"):
         keys.append("XE")
     keys = [k for k in keys if k not in lock]
-    bounds = [(float(PARAM_SPEC[k]["min"]), float(PARAM_SPEC[k]["max"])) for k in keys]
+    bounds = [(float(spec[k]["min"]), float(spec[k]["max"])) for k in keys]
     return keys, bounds
 
 
 def _base_params(sb: dict, ctx: dict, lock: dict | None = None) -> dict:
-    """单元的基础参数：按河长默认 + 项目锁定值。"""
-    prm = default_params(float(sb.get("river_length_km") or 0.0), ctx["dt_h"])
+    """单元的基础参数：按河长默认（当前模型的默认值）+ 项目锁定值。"""
+    model = ctx.get("model") or DEFAULT_MODEL
+    prm = default_params(float(sb.get("river_length_km") or 0.0), ctx["dt_h"], model)
+    valid = set(param_keys(model))
     for k, v in (lock or {}).items():
-        if k in PARAM_KEYS:
+        if k in valid:
             prm[k] = float(v)
     return prm
 
@@ -226,10 +235,11 @@ def _finalize_basin(
     period: dict | None,
     split: float,
     sbs: list[dict],
+    model: str | None = None,
 ) -> dict:
     """用最终参数集整体复算（权威结果，与「模型模拟」完全同源）并算分期指标。"""
     sim = simulate_basin(subbasins_doc, manifest, series_loader, params=final_params,
-                         period=period, return_raw=True)
+                         period=period, return_raw=True, model=model)
     if not sim.get("ok"):
         return {"ok": False, "error": sim.get("error") or "最终复算失败"}
 
@@ -270,13 +280,16 @@ def run_calibration(
 ) -> dict:
     """率定入口（P3 链式 / P5 联合，config.mode 选择，默认链式）。
 
-    - config: {mode?: "chain"|"joint", period{start,end,warmup_days}, split,
-               max_evals, seed, tol, lock: {code: {参数: 值}},
-               share?: {参数: [单元...]}, weights?: {code: 权重}（联合）}
-    - on_progress(payload): 每代回调（进度落盘 / 前端轮询）
-    - stop_flag(): 返回 True 则在当前代结束后终止
+    config: {model?: "xaj"|"gr4j"|"tank"|"hbv", mode?: "chain"|"joint",
+             period{start,end,warmup_days}, split,
+             max_evals, seed, tol, lock: {code: {参数: 值}},
+             share?: {参数: [单元...]}, weights?: {code: 权重}（联合）}
+    on_progress(payload): 每代回调（进度落盘 / 前端轮询）
+    stop_flag(): 返回 True 则在当前代结束后终止
     """
-    cfg = config or {}
+    cfg = dict(config or {})
+    model_key = get_model(cfg.get("model")).key
+    cfg["model"] = model_key
 
     sbs = sorted(subbasins_doc.get("subbasins", []), key=lambda s: (s.get("order_index") or 0))
     if not sbs:
@@ -285,7 +298,8 @@ def run_calibration(
     # ---- 逐单元预计算上下文（面雨量/蒸发/河道 KE/实测，一次性 ~0.5s/单元）
     contexts: dict[str, dict] = {}
     for sb in sbs:
-        c = unit_context(subbasins_doc, manifest, series_loader, sb["code"], period=cfg.get("period"))
+        c = unit_context(subbasins_doc, manifest, series_loader, sb["code"],
+                         period=cfg.get("period"), model=model_key)
         if not c.get("ok"):
             return {"ok": False, "error": c.get("error") or f"{sb['code']} 上下文构建失败"}
         contexts[sb["code"]] = c
@@ -301,7 +315,7 @@ def run_calibration(
         return {"ok": False, "error": "任务在开始前被终止", "status": "stopped"}
 
     mode = str(cfg.get("mode") or "chain").strip().lower()
-    pack = {"doc": subbasins_doc, "manifest": manifest, "loader": series_loader}
+    pack = {"doc": subbasins_doc, "manifest": manifest, "loader": series_loader, "model": model_key}
     if mode == "joint":
         return _run_joint(sbs, contexts, cfg, pack, emit, stop_flag)
     return _run_chain(sbs, contexts, cfg, pack, emit, stop_flag)
@@ -469,6 +483,9 @@ def _build_slots(sbs, contexts, lock: dict, share: dict) -> tuple[list[dict], di
     共享语义：``share: {参数: [单元...]}`` 中该参数在组内只占一个决策变量；组内某单元
     若锁定了该参数则仍用锁定值（不进组）。组内自由单元 < 2 时退化为各单元独立变量。
     """
+    model = contexts[sbs[0]["code"]].get("model") or DEFAULT_MODEL
+    spec = param_spec(model)
+
     # 每单元的自由参数
     unit_keys: dict[str, list[str]] = {}
     for sb in sbs:
@@ -478,7 +495,7 @@ def _build_slots(sbs, contexts, lock: dict, share: dict) -> tuple[list[dict], di
     # 共享组：key -> [自由单元]
     groups: dict[str, list[str]] = {}
     for k, codes in (share or {}).items():
-        if k not in PARAM_KEYS:
+        if k not in spec:
             continue
         members = [c for c in (codes or []) if c in unit_keys and k in unit_keys[c]]
         if len(members) >= 2:
@@ -492,7 +509,7 @@ def _build_slots(sbs, contexts, lock: dict, share: dict) -> tuple[list[dict], di
             {
                 "key": k, "units": members, "shared": True,
                 "label": f"{k}({'/'.join(members)})",
-                "bounds": (float(PARAM_SPEC[k]["min"]), float(PARAM_SPEC[k]["max"])),
+                "bounds": (float(spec[k]["min"]), float(spec[k]["max"])),
             }
         )
         for c in members:
@@ -507,11 +524,11 @@ def _build_slots(sbs, contexts, lock: dict, share: dict) -> tuple[list[dict], di
                 {
                     "key": k, "units": [code], "shared": False,
                     "label": f"{code}.{k}",
-                    "bounds": (float(PARAM_SPEC[k]["min"]), float(PARAM_SPEC[k]["max"])),
+                    "bounds": (float(spec[k]["min"]), float(spec[k]["max"])),
                 }
             )
 
-    return slots, {"unit_keys": unit_keys, "groups": groups}
+    return slots, {"unit_keys": unit_keys, "groups": groups, "model": model}
 
 
 def _run_joint(sbs, contexts, cfg, pack, emit, stop_flag) -> dict:
@@ -686,13 +703,15 @@ def _assemble_result(sbs, contexts, cfg, pack, units_out, stopped, t0, *, mode: 
 
     final_params = {u["code"]: u["params"] for u in units_out}
     fin = _finalize_basin(subbasins_doc, manifest, series_loader, contexts, final_params,
-                          period=period, split=split, sbs=sbs)
+                          period=period, split=split, sbs=sbs, model=pack.get("model"))
+
     if not fin.get("ok"):
         return {"ok": False, "error": fin.get("error") or "最终复算失败", "units": units_out}
 
     return {
         "ok": True,
         "mode": mode,
+        "model": pack.get("model") or DEFAULT_MODEL,
         "status": "stopped" if stopped else "done",
         "units": units_out,
         "metrics": fin["metrics"],

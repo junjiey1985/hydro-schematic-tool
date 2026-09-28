@@ -14,6 +14,8 @@ from pathlib import Path
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 
 from .. import storage as st
+from ..core.model.models import get_model
+from ..core.model.params import truth_params
 from ..core.model.simulate import truth_basin_flow
 from ..core.timeseries import (
     KIND_AGG,
@@ -266,8 +268,10 @@ def make_demo(pid: str, payload: dict | None = None):
             created[kind].append({"key": key, "name": entry["name"], "count": entry["count"], "interval": entry["interval"]})
 
     # ② 流量：用真值参数跑模型（OSSE），失败则回退到简化两层水库合成
+    #    真值参数取**项目当前模型**（不同模型参数互不兼容），并随真值存档记录
     manifest = st.read_ts_manifest(pid)
-    flows = truth_basin_flow(sub, manifest, series_loader(pid), seed=seed)
+    model_key = st.read_project_model(pid)
+    flows = truth_basin_flow(sub, manifest, series_loader(pid), seed=seed, model=model_key)
     flow_source = "生成·真值模型"
     if not flows:
         fallback = demo_series(sub, days=days, seed=seed, start=start, flow_mode="simple")
@@ -278,7 +282,13 @@ def make_demo(pid: str, payload: dict | None = None):
         entry = _save_series(pid, "flow", key, item.get("name") or key, recs, detect_interval(recs), flow_source, key)
         created["flow"].append({"key": key, "name": entry["name"], "count": entry["count"], "interval": entry["interval"]})
 
-    # ③ 真值存档，供 P3 率定回收比对
+    # ③ 真值存档，供 P3 率定回收比对（率定所用模型必须与生成演示数据的模型一致）
+    doc["truth"]["model"] = model_key
+    doc["truth"]["params"] = dict(truth_params(model_key))
+    doc["truth"]["note"] = (
+        f"{get_model(model_key).name} 真值参数（OSSE）：流量由本工具该模型以该参数生成，"
+        "率定应能回收" if flow_source == "生成·真值模型" else "简化两层水库真值（无拓扑时的回退模式）"
+    )
     truth_path = st.project_dir(pid) / "calibration" / "demo_truth.json"
     truth_path.parent.mkdir(parents=True, exist_ok=True)
     truth_path.write_text(

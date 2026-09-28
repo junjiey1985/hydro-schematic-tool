@@ -18,7 +18,8 @@ import time
 
 import numpy as np
 
-from .params import PARAM_KEYS, PARAM_SPEC, default_params
+from .models import DEFAULT_MODEL, get_model
+from .params import default_params, param_spec
 from .simulate import eval_unit, unit_context
 
 
@@ -60,16 +61,18 @@ def run_glue(
 ) -> dict:
     """GLUE 入口（同步执行）。返回分位带 + 行为参数范围 + 每站行为样本统计。
 
-    config: {n_samples(默认1000, 钳50~5000), threshold(默认0.7), seed, split,
-             lock: {code:{参数:值}}, period: {start,end,warmup_days}}
+    config: {model(默认 xaj), n_samples(默认1000, 钳50~5000), threshold(默认0.7), seed,
+             split, lock: {code:{参数:值}}, period: {start,end,warmup_days}}
     """
     cfg = config or {}
+    model_key = get_model(cfg.get("model")).key
     n_samples = min(max(int(cfg.get("n_samples") or 1000), 50), 5000)
     threshold = float(cfg.get("threshold") or 0.7)
     seed = int(cfg.get("seed") or 0)
     split = min(max(float(cfg.get("split") or 0.7), 0.3), 0.95)
     lock = cfg.get("lock") or {}
     period = cfg.get("period") or None
+    spec = param_spec(model_key)
 
     sbs = sorted(subbasins_doc.get("subbasins", []), key=lambda s: (s.get("order_index") or 0))
     if not sbs:
@@ -77,7 +80,8 @@ def run_glue(
 
     contexts: dict[str, dict] = {}
     for sb in sbs:
-        c = unit_context(subbasins_doc, manifest, series_loader, sb["code"], period=period)
+        c = unit_context(subbasins_doc, manifest, series_loader, sb["code"],
+                         period=period, model=model_key)
         if not c.get("ok"):
             return {"ok": False, "error": c.get("error") or f"{sb['code']} 上下文构建失败"}
         contexts[sb["code"]] = c
@@ -94,12 +98,12 @@ def run_glue(
         code = sb["code"]
         ctx = contexts[code]
         lock_u = lock.get(code) or {}
-        keys = [k for k in PARAM_KEYS if k != "XE"]
+        keys = [k for k in spec if k != "XE"]
         if ctx.get("has_upstream"):
             keys.append("XE")
         keys = [k for k in keys if k not in lock_u]
         bounds = np.array(
-            [[float(PARAM_SPEC[k]["min"]), float(PARAM_SPEC[k]["max"])] for k in keys],
+            [[float(spec[k]["min"]), float(spec[k]["max"])] for k in keys],
             dtype=float,
         ).reshape(len(keys), 2)
         samples = (
@@ -107,9 +111,9 @@ def run_glue(
             if not keys
             else rng.uniform(bounds[:, 0], bounds[:, 1], size=(n_samples, len(keys)))
         )
-        base = default_params(float(sb.get("river_length_km") or 0.0), ctx["dt_h"])
+        base = default_params(float(sb.get("river_length_km") or 0.0), ctx["dt_h"], model_key)
         for k, v in lock_u.items():
-            if k in PARAM_KEYS:
+            if k in spec:
                 base[k] = float(v)
         unit_plan.append(
             {"code": code, "ctx": ctx, "keys": keys, "samples": samples,
@@ -232,8 +236,8 @@ def run_glue(
                         "code": u["code"], "key": k,
                         "min": round(float(col.min()), 4),
                         "max": round(float(col.max()), 4),
-                        "range_lo": float(PARAM_SPEC[k]["min"]),
-                        "range_hi": float(PARAM_SPEC[k]["max"]),
+                        "range_lo": float(spec[k]["min"]),
+                        "range_hi": float(spec[k]["max"]),
                     }
                 )
         param_ranges = rows
@@ -241,6 +245,8 @@ def run_glue(
     return {
         "ok": True,
         "method": "GLUE",
+        "model": model_key,
+        "model_name": get_model(model_key).name,
         "n_samples": n_samples,
         "threshold": threshold,
         "split": split,

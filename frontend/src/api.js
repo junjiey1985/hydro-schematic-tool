@@ -111,7 +111,10 @@ export const api = {
   timeseriesDemo: (pid, payload = {}) =>
     request(`/api/projects/${pid}/timeseries/demo`, { method: 'POST', body: payload }),
 
-  // ---------------- 模型模拟与率定（P2：params / apply / simulate）
+  // ---------------- 模型模拟与率定（P2：params / apply / simulate；P10：模型选择）
+  calibrationModels: (pid) => request(`/api/projects/${pid}/calibration/models`),
+  calibrationSetModel: (pid, model) =>
+    request(`/api/projects/${pid}/calibration/model`, { method: 'POST', body: { model } }),
   calibrationParams: (pid) => request(`/api/projects/${pid}/calibration/params`),
   calibrationApply: (pid, payload = {}) =>
     request(`/api/projects/${pid}/calibration/apply`, { method: 'POST', body: payload }),
