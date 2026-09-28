@@ -625,6 +625,47 @@ def _nse_range(metrics: list[dict], split_key: str) -> list[float | None]:
     return [min(vals), max(vals)] if vals else [None, None]
 
 
+def _augment_peak(metrics: list[dict]) -> list[dict]:
+    """给逐单元指标补 ``peak_bias_pct``：各场洪峰相对偏差的逐单元中位数（%）。
+
+    ``all_metrics`` 已给出 ``peak_error``（多场洪峰 + 峰现时间差的中位数）；此处只把
+    「洪峰量级偏差」也从 events 里汇总成单值，供对比表横向比较。
+    """
+    for m in metrics or []:
+        for split in ("calib", "valid"):
+            mm = m.get(split)
+            if not mm:
+                continue
+            ev = ((mm.get("peak_error") or {}).get("events")) or []
+            pcts = [
+                ((e.get("sim_peak") or 0.0) - (e.get("obs_peak") or 0.0)) / e["obs_peak"] * 100.0
+                for e in ev
+                if e.get("obs_peak")
+            ]
+            mm["peak_bias_pct"] = round(float(np.median(pcts)), 1) if pcts else None
+    return metrics
+
+
+def _peak_summary(metrics: list[dict]) -> dict:
+    """逐模型「形态学」汇总（最差单元口径）：洪峰偏差 |%| 最大、峰现偏移 |时段| 最大。"""
+    def _num(v):
+        return abs(float(v)) if v is not None else None
+
+    out = {}
+    for split in ("calib", "valid"):
+        bias = [x for x in (_num((m.get(split) or {}).get("peak_bias_pct")) for m in metrics or [])
+                if x is not None]
+        shift = [x for x in (
+            _num(((m.get(split) or {}).get("peak_error") or {}).get("median_steps"))
+            for m in metrics or []) if x is not None]
+        out[split] = {
+            "peak_bias_absmax": round(max(bias), 1) if bias else None,
+            "peak_shift_absmax": round(max(shift), 1) if shift else None,
+            "n_units": len(bias),
+        }
+    return out
+
+
 def _compare_worker(pid: str, cid: str, cfg: dict, sub: dict, stop_event: threading.Event):
     started = time.time()
     doc = _compare_doc(pid, cid)
@@ -674,12 +715,14 @@ def _compare_worker(pid: str, cid: str, cfg: dict, sub: dict, stop_event: thread
                 else:
                     mdoc.update({"status": "failed", "error": res.get("error") or "率定失败"})
                 continue
+            m_ms = _augment_peak(res.get("metrics") or [])
             mdoc.update({
                 "status": "stopped" if res.get("status") == "stopped" else "done",
-                "metrics": res.get("metrics") or [],
+                "metrics": m_ms,
                 "final_params": res.get("final_params") or {},
-                "calib_nse_range": _nse_range(res.get("metrics"), "calib"),
-                "valid_nse_range": _nse_range(res.get("metrics"), "valid"),
+                "calib_nse_range": _nse_range(m_ms, "calib"),
+                "valid_nse_range": _nse_range(m_ms, "valid"),
+                "peak_summary": _peak_summary(m_ms),
                 "warnings": res.get("warnings") or [],
             })
             _write_compare_doc(pid, cid, doc)
@@ -736,7 +779,7 @@ def start_compare(pid: str, payload: dict | None = None):
         "models": {mk: {"key": mk, "name": get_model(mk).name, "status": "pending",
                         "elapsed_s": None, "metrics": [], "final_params": {},
                         "calib_nse_range": [None, None], "valid_nse_range": [None, None],
-                        "error": None}
+                        "peak_summary": None, "error": None}
                    for mk in models},
         "error": None,
     }
@@ -824,6 +867,12 @@ def export_compare(pid: str, cid: str, what: str = "metrics"):
                 for k in ("nse", "r2", "kge", "rmse", "pbias"):
                     if mm.get(k) is not None:
                         lines.append(f"{mk},{m.get('code')},{split},{k},{float(mm[k]):.6g}")
+                # 形态学指标：洪峰相对偏差（%）与峰现时间偏移（时段，多场洪峰中位数）
+                if mm.get("peak_bias_pct") is not None:
+                    lines.append(f"{mk},{m.get('code')},{split},peak_bias_pct,{float(mm['peak_bias_pct']):.6g}")
+                shift = ((mm.get("peak_error") or {}).get("median_steps"))
+                if shift is not None:
+                    lines.append(f"{mk},{m.get('code')},{split},peak_shift_steps,{float(shift):.6g}")
     return _csv_response("\n".join(lines) + "\n", f"compare_{cid}.csv")
 
 

@@ -129,6 +129,21 @@ for mk in ("xaj", "tank"):
     check(f"[{mk}] 无错误字段", not m.get("error"), f"({m.get('error')})")
     codes = {x.get("code") for x in ms}
     check(f"[{mk}] 单元 code 唯一且非空", len(codes) == len(ms) and all(codes))
+    # 形态学指标：洪峰偏差（%）与峰现偏移（时段）
+    check(f"[{mk}] 逐单元补出 peak_bias_pct",
+          all("peak_bias_pct" in (x.get("calib") or {}) and "peak_bias_pct" in (x.get("valid") or {})
+              for x in ms))
+    check(f"[{mk}] peak_error 为多场洪峰口径",
+          all(isinstance(((x.get("calib") or {}).get("peak_error") or {}).get("events"), list)
+              for x in ms))
+    ps = m.get("peak_summary") or {}
+    check(f"[{mk}] peak_summary 含 calib/valid 两口径",
+          set(ps.keys()) >= {"calib", "valid"}
+          and ps["calib"].get("peak_bias_absmax") is not None
+          and ps["calib"].get("peak_shift_absmax") is not None,
+          f"(率定 {ps.get('calib')})")
+    check(f"[{mk}] 洪峰偏差为绝对值且非负", (ps.get("calib") or {}).get("peak_bias_absmax", -1) >= 0,
+          f"({(ps.get('calib') or {}).get('peak_bias_absmax')}%)")
 
 # 参数隔离：final_params 形如 {单元code: {参数名: 值}}
 # 注册表 params=自由参数；KE/XE 是河道汇流参数（单元有来流才出现，各模型共用）；fixed 为结构常量不参与率定
@@ -162,6 +177,9 @@ check("CSV 导出 200 且表头正确", s == 200 and head == "model,unit,split,m
       f"(实际 {s}, 表头 {head[:40]!r})")
 check("CSV 含两模型数据行", len(lines) > 5 and any(ln.startswith("xaj,") for ln in lines)
       and any(ln.startswith("tank,") for ln in lines), f"({len(lines)} 行)")
+check("CSV 含形态学指标行",
+      any(",peak_bias_pct," in ln for ln in lines) and any(",peak_shift_steps," in ln for ln in lines),
+      f"(peak 行 {sum(1 for ln in lines if ',peak_' in ln)})")
 
 s, r = call("POST", f"/api/projects/{PID}/calibration/compare/{cid}/stop")
 check("已结束任务 stop 返回 409", s == 409, f"(实际 {s})")

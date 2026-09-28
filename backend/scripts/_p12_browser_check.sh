@@ -89,6 +89,10 @@ chk "结果区标题" "对比结果" debug_shots/snap12_3.txt
 chk "表头-率定期 NSE" "率定期 NSE" debug_shots/snap12_3.txt
 chk "表头-验证期 NSE" "验证期 NSE" debug_shots/snap12_3.txt
 chk "表头-耗时" "耗时" debug_shots/snap12_3.txt
+chk "表头-洪峰偏差" "洪峰偏差" debug_shots/snap12_3.txt
+chk "表头-峰现偏移" "峰现偏移" debug_shots/snap12_3.txt
+chk "形态学口径说明" "形态学指标口径" debug_shots/snap12_3.txt
+chk "多场洪峰口径说明" "多场洪峰" debug_shots/snap12_3.txt
 chk "状态-已完成" "已完成" debug_shots/snap12_3.txt
 chk "导出入口" "导出指标 CSV" debug_shots/snap12_3.txt
 chk "历次对比条数（含本次）" "模型 ·" debug_shots/snap12_3.txt

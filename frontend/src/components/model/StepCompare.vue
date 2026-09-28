@@ -68,10 +68,12 @@
         <table class="tbl">
           <thead>
             <tr>
-              <th style="width: 150px">模型</th>
+              <th style="width: 140px">模型</th>
               <th class="num">率定期 NSE（最差~最优）</th>
               <th class="num">验证期 NSE（最差~最优）</th>
-              <th class="num" style="width: 86px">耗时</th>
+              <th class="num" style="width: 104px">洪峰偏差 |%|<i class="th-i">率定/验证</i></th>
+              <th class="num" style="width: 96px">峰现偏移<i class="th-i">率定/验证（时段）</i></th>
+              <th class="num" style="width: 76px">耗时</th>
               <th style="width: 76px">状态</th>
             </tr>
           </thead>
@@ -80,6 +82,12 @@
               <td><span class="dot" :style="{ background: colorOf(k) }"></span>{{ (doc.models[k] || {}).name }}</td>
               <td class="num">{{ nseRange((doc.models[k] || {}).calib_nse_range) }}</td>
               <td class="num">{{ nseRange((doc.models[k] || {}).valid_nse_range) }}</td>
+              <td class="num" :class="peakCls(doc.models[k], 'peak_bias_absmax')">
+                {{ peakTxt(doc.models[k], 'peak_bias_absmax') }}
+              </td>
+              <td class="num" :class="peakCls(doc.models[k], 'peak_shift_absmax')">
+                {{ peakTxt(doc.models[k], 'peak_shift_absmax') }}
+              </td>
               <td class="num">{{ fmtS((doc.models[k] || {}).elapsed_s) }}</td>
               <td><span :class="(doc.models[k] || {}).status === 'done' ? 'ok-t' : 'warn-t'">{{ statusText((doc.models[k] || {}).status) }}</span></td>
             </tr>
@@ -88,6 +96,13 @@
       </div>
       <div v-if="barOption" class="chart-box">
         <EChart :option="barOption" :height="200" />
+      </div>
+      <div class="note">
+        <b>形态学指标口径</b>：洪峰偏差 = 各场洪峰相对偏差的逐单元中位数（取各单元绝对值最大，%），
+        峰现偏移 = 各场峰现时间差的中位数（时段）。二者均为<b>多场洪峰</b>口径而非全局最大值——
+        多年序列里「哪一年最大」会主导全局指标。阈值参考：洪峰偏差 ≤10 绿 / ≤25 黄 / 其余红，
+        峰现偏移 ≤1 绿 / ≤3 黄 / 其余红（日模型 1 时段 = 1 天）。NSE 高但洪峰偏差大，
+        说明水量总量拟合好而峰值削平——对防洪调度而言这正是关键差别。
       </div>
       <div v-if="failedModels.length" class="note warn">
         {{ failedModels }} 率定失败：{{ (doc.models[failedModels.split('、')[0]] || {}).error || '详见后端日志' }}
@@ -231,6 +246,30 @@ function fmtT(t) {
 function nseRange(r) {
   if (!r || r[0] == null) return '—'
   return `${Number(r[0]).toFixed(3)} ~ ${Number(r[1]).toFixed(3)}`
+}
+
+/** 形态学汇总单元格：`率定 / 验证` 两值（同一口径的绝对值最大单元）。 */
+function peakTxt(m, key) {
+  const p = m && m.peak_summary
+  if (!p) return '—'
+  const a = (p.calib || {})[key]
+  const b = (p.valid || {})[key]
+  if (a == null && b == null) return '—'
+  const f = (v) => (v == null ? '—' : Number(v).toFixed(1))
+  return `${f(a)} / ${f(b)}`
+}
+
+function peakCls(m, key) {
+  const p = m && m.peak_summary
+  if (!p) return ''
+  const vals = ['calib', 'valid']
+    .map((s) => (p[s] || {})[key])
+    .filter((v) => v != null)
+    .map((v) => Math.abs(Number(v)))
+  if (!vals.length) return ''
+  const v = Math.max(...vals)
+  const lim = key === 'peak_bias_absmax' ? [10, 25] : [1, 3]
+  return v <= lim[0] ? 'ok-t' : v <= lim[1] ? 'warn-t' : 'bad-t'
 }
 
 function colorOf(k) {
@@ -409,5 +448,15 @@ const barOption = computed(() => {
 }
 .warn-t {
   color: #d97706;
+}
+.bad-t {
+  color: #dc2626;
+}
+.th-i {
+  display: block;
+  font-style: normal;
+  font-weight: 400;
+  font-size: 10px;
+  color: var(--text-3, #999);
 }
 </style>
