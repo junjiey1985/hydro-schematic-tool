@@ -34,5 +34,6 @@ debug.log
 # 本地调试截图与临时脚本产物
 debug_shots/
 
-# 本地调试截图与临时脚本产物
-debug_shots/
+# 离线实验的中间结果（可由 scripts/_compare_models.py、_hybrid_residual.py 重新产出；
+# 最终交付物是 docs/ 下的报告）
+backend/_*_result.json
