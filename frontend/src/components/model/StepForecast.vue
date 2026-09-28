@@ -39,6 +39,9 @@
       <label>蒸发假设</label>
       <input v-model.number="form.evap" type="number" min="0" step="0.5" class="num-in" />
       <span class="muted">mm/天（留空 = 历史均值）</span>
+      <label style="margin-left: 10px">气温假设</label>
+      <input v-model.number="form.temp" type="number" step="0.5" class="num-in" />
+      <span class="muted">°C（留空 = 历史同期均值；无气温序列时忽略）</span>
       <span class="grow"></span>
       <button id="fc-run" class="btn primary" :disabled="!canRun" @click="runForecast">
         {{ running ? '预报中…' : '运行预报' }}
@@ -76,6 +79,7 @@
           <b>{{ fmt(u.forecast && u.forecast.peak_q, 0) }}</b>
         </button>
         <span v-if="rainSummary" class="muted small">{{ rainSummary }}</span>
+        <span v-if="tempNote" class="muted small">{{ tempNote }}</span>
       </div>
       <div class="chart-box">
         <EChart :option="chartOption" :height="300" />
@@ -134,7 +138,8 @@ const form = reactive({
   duration: 7,
   peak_pos: 0.4,
   seriesText: '',
-  evap: null
+  evap: null,
+  temp: null
 })
 
 const running = ref(false)
@@ -183,6 +188,7 @@ async function runForecast() {
   try {
     const payload = { horizon_days: Number(form.horizon) || 30, rain }
     if (form.evap !== null && form.evap !== '') payload.evap_mm = Number(form.evap)
+    if (form.temp !== null && form.temp !== '') payload.temp_c = Number(form.temp)
     const r = await api.calibrationForecast(state.project.id, payload)
     result.value = r
     state.calib.fcResult = r
@@ -220,6 +226,13 @@ const rainSummary = computed(() => {
   const fc = sum(rain.slice(idx))
   const unitTxt = rainStepLabel.value
   return `历史段实测面雨量 ${obs.toFixed(0)} mm（${idx} ${unitTxt}） · 预报段情景降雨 ${fc.toFixed(0)} mm（${rain.length - idx} ${unitTxt}）`
+})
+
+// 气温假设提示：从后端 warnings 中提取融雪相关说明（雪版预报时可见）
+const tempNote = computed(() => {
+  const w = (result.value && result.value.warnings) || []
+  const hit = w.find((x) => typeof x === 'string' && x.indexOf('气温') >= 0)
+  return hit || ''
 })
 
 const chartOption = computed(() => {

@@ -309,6 +309,8 @@ def run_forecast(pid: str, payload: dict | None = None):
     extend = {"days": horizon, "rain_mm": rain_mm}
     if payload.get("evap_mm") is not None:
         extend["evap_mm"] = float(payload["evap_mm"])
+    if payload.get("temp_c") is not None and payload.get("temp_c") != "":
+        extend["temp_c"] = payload["temp_c"]  # 标量或逐日序列；缺省走历史同期均值
 
     saved = _read_default_params(pid) or {}
     merged = dict(saved)
