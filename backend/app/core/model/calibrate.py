@@ -24,6 +24,7 @@
 from __future__ import annotations
 
 import time
+import zlib
 
 import numpy as np
 
@@ -437,7 +438,10 @@ def _run_chain(sbs, contexts, cfg, pack, emit, stop_flag) -> dict:
 
         res = sceua(
             F, bounds,
-            max_evals=max_evals, tol=tol, seed=seed + hash(code) % 1000,
+            # 每单元用「配置种子 + 单元码的稳定哈希」错开，避免各单元走同一条采样路径。
+            # **不可用内置 hash(code)**：字符串 hash 按进程随机化（PYTHONHASHSEED），
+            # 会让同一 seed 的率定在不同进程/服务重启后给出不同结果，破坏可复现性。
+            max_evals=max_evals, tol=tol, seed=seed + zlib.crc32(code.encode("utf-8")) % 1000,
             stop_flag=stop_flag,
             on_gen=lambda gen, bf, ev_, bx, _c=code, _k=keys: emit(
                 {"phase": "run", "unit": _c, "gen": gen, "best_f": round(bf, 6),
